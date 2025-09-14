@@ -8,7 +8,6 @@
 
 use saved_core_rs::{create_or_open_account, Config, Event};
 use std::path::PathBuf;
-use std::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]

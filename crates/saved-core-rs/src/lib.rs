@@ -357,10 +357,10 @@ mod tests {
         };
 
         // Create laptop as account key holder
-        let mut laptop = crate::types::AccountHandle::create_account_key_holder(config_laptop).await.unwrap();
+        let laptop = crate::types::AccountHandle::create_account_key_holder(config_laptop).await.unwrap();
         
         // Create new phone as regular device
-        let mut new_phone = crate::types::AccountHandle::create_or_open(config_phone).await.unwrap();
+        let new_phone = crate::types::AccountHandle::create_or_open(config_phone).await.unwrap();
 
         // Verify laptop has account private key
         assert!(laptop.has_account_private_key().await.unwrap());

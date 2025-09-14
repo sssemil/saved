@@ -547,7 +547,7 @@ impl AccountHandle {
         let heads = self.sync_manager.event_log().get_heads();
         
         // Create announcement message
-        let announcement = crate::protobuf::AnnounceHeads {
+        let _announcement = crate::protobuf::AnnounceHeads {
             feed_id: "local-feed".to_string(),
             lamport: heads.len() as u64,
             heads: heads.iter().map(|h| h.to_vec()).collect(),

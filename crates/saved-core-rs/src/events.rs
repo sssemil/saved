@@ -389,7 +389,7 @@ mod tests {
     fn test_event_log_operations() {
         let mut log = EventLog::new();
         let device_key = DeviceKey::generate();
-        let vault_key = generate_vault_key();
+        let _vault_key = generate_vault_key();
 
         let op = Op::new(
             OpId::new(device_key.public_key_bytes(), 1),
