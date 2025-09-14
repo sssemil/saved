@@ -12,6 +12,16 @@ use crate::crypto;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageId(pub [u8; 32]);
 
+/// A message in the system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: MessageId,
+    pub content: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub is_deleted: bool,
+    pub is_purged: bool,
+}
+
 impl MessageId {
     /// Generate a new random message ID
     pub fn new() -> Self {
@@ -52,6 +62,10 @@ pub struct DeviceInfo {
 pub struct Config {
     /// Path to the account storage directory
     pub storage_path: PathBuf,
+    /// Network port for P2P connections
+    pub network_port: u16,
+    /// Whether to enable mDNS discovery
+    pub enable_mdns: bool,
     /// Whether to allow connections to public relays
     pub allow_public_relays: bool,
     /// Bootstrap multiaddrs for initial peer discovery
@@ -68,6 +82,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             storage_path: PathBuf::from("./saved-account"),
+            network_port: 8080,
+            enable_mdns: true,
             allow_public_relays: false,
             bootstrap_multiaddrs: Vec::new(),
             use_kademlia: false,
@@ -127,7 +143,7 @@ impl AccountHandle {
         // Create sync manager
         let vault_key = crypto::generate_vault_key();
         let device_key = crypto::DeviceKey::generate();
-        let sync_manager = sync::SyncManager::new(storage, vault_key, device_key, event_sender.clone());
+        let sync_manager = sync::SyncManager::new(storage, config.storage_path.clone(), vault_key, device_key, event_sender.clone());
         
         Ok(Self {
             sync_manager,
@@ -220,5 +236,18 @@ impl AccountHandle {
     pub async fn disable_cloud_backup(&self) -> crate::Result<()> {
         // TODO: Implement cloud backup disable
         Ok(())
+    }
+
+    /// List all messages (for testing)
+    pub async fn list_messages(&self) -> crate::Result<Vec<Message>> {
+        // For testing, we'll create a temporary storage instance
+        // In a real implementation, this would be properly exposed
+        let storage = storage::Storage::open(self.sync_manager.storage_path.clone())?;
+        storage.get_all_messages().await
+    }
+
+    /// Get sync manager (for testing)
+    pub fn sync_manager_mut(&mut self) -> &mut sync::SyncManager {
+        &mut self.sync_manager
     }
 }

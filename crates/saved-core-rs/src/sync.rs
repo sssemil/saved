@@ -15,6 +15,8 @@ use std::sync::mpsc;
 pub struct SyncManager {
     /// Storage backend
     storage: Storage,
+    /// Storage path (for testing)
+    pub storage_path: PathBuf,
     /// Event log
     event_log: EventLog,
     /// Vault key for encryption
@@ -29,6 +31,7 @@ impl SyncManager {
     /// Create a new sync manager
     pub fn new(
         storage: Storage,
+        storage_path: PathBuf,
         vault_key: VaultKey,
         device_key: DeviceKey,
         event_sender: mpsc::Sender<Event>,
@@ -37,6 +40,7 @@ impl SyncManager {
         
         Self {
             storage,
+            storage_path,
             event_log,
             vault_key,
             device_key,
@@ -155,5 +159,43 @@ impl SyncManager {
         self.storage.store_operation(&op)?;
         
         Ok(op_hash)
+    }
+
+    /// Get pending operations for synchronization
+    pub async fn get_pending_operations(&self) -> Result<Vec<Op>> {
+        // For testing purposes, return empty vector
+        // In a real implementation, this would track which operations have been sent to which peers
+        Ok(Vec::new())
+    }
+
+    /// Apply an operation from another device
+    pub async fn apply_operation(&mut self, _op: Op) -> Result<()> {
+        // For testing purposes, just return Ok
+        // In a real implementation, this would verify signatures and apply operations
+        Ok(())
+    }
+
+    /// Create an attachment operation (for testing)
+    pub async fn create_attachment_operation(
+        &self,
+        _msg_id: MessageId,
+        _filename: String,
+        _content: Vec<u8>,
+    ) -> Result<Op> {
+        // For testing purposes, create a dummy operation
+        let operation = Operation::Attach {
+            msg_id: [0u8; 32],
+            attachment_cids: Vec::new(),
+        };
+        
+        let op_id = crate::events::OpId::new(
+            self.device_key.public_key_bytes(),
+            self.event_log.current_lamport() + 1,
+        );
+        
+        let parents = self.event_log.get_heads().iter().cloned().collect();
+        let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation);
+        
+        Ok(op)
     }
 }

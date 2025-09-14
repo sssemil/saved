@@ -68,7 +68,7 @@ impl Storage {
     }
 
     /// Initialize database schema
-    fn init_schema(&self) -> Result<()> {
+    fn init_schema(&mut self) -> Result<()> {
         // Operations table
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS operations (
@@ -559,14 +559,20 @@ mod tests {
     #[test]
     fn test_storage_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let storage = Storage::open(temp_dir.path().to_path_buf()).unwrap();
+        let account_path = temp_dir.path().join("test_account");
+        std::fs::create_dir_all(&account_path).unwrap();
+        let storage = Storage::open(account_path).unwrap();
         assert!(storage.event_log().get_heads().is_empty());
     }
 
     #[test]
     fn test_chunk_storage() {
+        use crate::crypto::blake3_hash;
+        
         let temp_dir = TempDir::new().unwrap();
-        let mut storage = Storage::open(temp_dir.path().to_path_buf()).unwrap();
+        let account_path = temp_dir.path().join("test_account");
+        std::fs::create_dir_all(&account_path).unwrap();
+        let mut storage = Storage::open(account_path).unwrap();
         
         let data = b"Hello, SAVED!";
         let chunk_id = blake3_hash(data);
@@ -576,5 +582,49 @@ mod tests {
         
         let retrieved = storage.get_chunk(chunk_id).unwrap();
         assert_eq!(data, &retrieved[..]);
+    }
+}
+
+impl Storage {
+    /// Get all operations (for testing)
+    pub async fn get_all_operations(&self) -> Result<Vec<crate::events::Op>> {
+        // For now, return empty vector since we don't have proper serialization
+        // In a real implementation, this would deserialize operations from the database
+        Ok(Vec::new())
+    }
+
+    /// Get all messages (for testing)
+    pub async fn get_all_messages(&self) -> Result<Vec<crate::types::Message>> {
+        let mut stmt = self.db.prepare(
+            "SELECT msg_id, body, created_at, is_deleted, is_purged FROM messages ORDER BY created_at ASC"
+        )?;
+        
+        let rows = stmt.query_map([], |row| {
+            let msg_id_bytes: Vec<u8> = row.get(0)?;
+            let body: String = row.get(1)?;
+            let created_at: String = row.get(2)?;
+            let is_deleted: bool = row.get(3)?;
+            let is_purged: bool = row.get(4)?;
+            
+            let mut msg_id = [0u8; 32];
+            msg_id.copy_from_slice(&msg_id_bytes[0..32]);
+            
+            Ok(crate::types::Message {
+                id: crate::types::MessageId(msg_id),
+                content: body,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                is_deleted,
+                is_purged,
+            })
+        })?;
+        
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        
+        Ok(messages)
     }
 }
