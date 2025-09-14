@@ -1,0 +1,55 @@
+[package]
+name = "saved-cli-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line interface for SAVED - Personal Messages Sync"
+authors = ["SAVED Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/saved-org/saved"
+keywords = ["p2p", "sync", "messages", "encryption", "cli"]
+categories = ["command-line-utilities", "cryptography", "network-programming"]
+
+[[bin]]
+name = "saved"
+path = "src/main.rs"
+
+[dependencies]
+# Core library
+saved-core-rs = { path = "../saved-core-rs" }
+
+# CLI framework
+clap = { version = "4.4", features = ["derive", "color", "suggestions"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+hex = "0.4"
+base64 = "0.21"
+
+# File operations
+walkdir = "2.3"
+
+# Terminal colors and formatting
+colored = "2.0"
+indicatif = "0.17"
+
+# QR code generation
+qrcode = "0.14"
+image = "0.24"
+
+# Table formatting
+comfy-table = "7.0"
+
+[dev-dependencies]
+tempfile = "3.8"

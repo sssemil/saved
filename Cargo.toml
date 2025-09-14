@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/*",
+]
+resolver = "2"
+
+[workspace.dependencies]
+
+[workspace.package]
+edition = "2021"
+version = "1.0.0"
+authors = ["Emil <emil@esnx.xyz>"]
+license = "Proprietary"
+repository = "git@github.com:sssemil/saved.git"
+description = "SAVED - A p2p e2ee notes and files sync app"
