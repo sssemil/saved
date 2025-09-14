@@ -23,6 +23,7 @@ pub async fn init_command(account_path: &PathBuf, name: &str, verbose: bool) -> 
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
     };
 
     // Create account
@@ -61,6 +62,7 @@ pub async fn info_command(account_path: &PathBuf, verbose: bool) -> Result<()> {
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
     };
 
     // Open account

@@ -9,7 +9,7 @@ pub use memory::MemoryStorage;
 // Re-export types for convenience
 
 /// Storage backend types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StorageBackend {
     Sqlite,
     Memory,

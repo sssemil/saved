@@ -52,9 +52,7 @@ pub async fn create_or_open_account(config: Config) -> Result<AccountHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tempfile::TempDir;
-    use tokio::time::{sleep, Duration};
 
     /// Test helper to create a temporary account
     async fn create_test_account(name: &str) -> Result<(AccountHandle, TempDir)> {
@@ -73,9 +71,10 @@ mod tests {
             use_kademlia: false,
             chunk_size: 2 * 1024 * 1024,
             max_parallel_chunks: 4,
+            storage_backend: crate::storage::StorageBackend::Memory, // Use in-memory storage for tests
         };
         
-        let account = AccountHandle::create_test_account(config).await?;
+        let account = AccountHandle::create_or_open(config).await?;
         Ok((account, temp_dir))
     }
 
@@ -146,7 +145,7 @@ mod tests {
 
         // Create two test devices
         let (mut device_a, _temp_a) = create_test_account("device_a_edit").await?;
-        let (mut device_b, _temp_b) = create_test_account("device_b_edit").await?;
+        let (_device_b, _temp_b) = create_test_account("device_b_edit").await?;
 
         // Device A creates a message
         let msg_id = device_a.create_message("Original message".to_string(), Vec::new()).await?;
@@ -174,9 +173,9 @@ mod tests {
         let (mut device_a, _temp_a) = create_test_account("device_a_delete").await?;
 
         // Device A creates messages
-        let msg1_id = device_a.create_message("Message 1".to_string(), Vec::new()).await?;
+        let _msg1_id = device_a.create_message("Message 1".to_string(), Vec::new()).await?;
         let msg2_id = device_a.create_message("Message 2".to_string(), Vec::new()).await?;
-        let msg3_id = device_a.create_message("Message 3".to_string(), Vec::new()).await?;
+        let _msg3_id = device_a.create_message("Message 3".to_string(), Vec::new()).await?;
 
         println!("✅ Device A created 3 messages");
 
@@ -193,7 +192,7 @@ mod tests {
         assert_eq!(messages.len(), 2);
 
         // Test purge (permanent deletion)
-        device_a.purge_message(msg1_id).await?;
+        device_a.purge_message(_msg1_id).await?;
         println!("💀 Device A purged message 1");
 
         let messages = device_a.list_messages().await?;
@@ -212,8 +211,8 @@ mod tests {
         let (mut device_a, _temp_a) = create_test_account("device_a_attach").await?;
 
         // Create test attachments
-        let (filename1, content1) = create_test_attachment("A", 1);
-        let (filename2, content2) = create_test_attachment("A", 2);
+        let (_filename1, _content1) = create_test_attachment("A", 1);
+        let (_filename2, _content2) = create_test_attachment("A", 2);
 
         // Device A creates a message with attachments
         let msg_id = device_a.create_message("Message with attachments".to_string(), Vec::new()).await?;
@@ -265,9 +264,9 @@ mod tests {
         let (mut device_c, _temp_c) = create_test_account("device_c_partition").await?;
 
         // Each device creates messages independently
-        let msg1_id = device_a.create_message("Initial message".to_string(), Vec::new()).await?;
-        let msg2_id = device_b.create_message("B message".to_string(), Vec::new()).await?;
-        let msg3_id = device_c.create_message("C message".to_string(), Vec::new()).await?;
+        let _msg1_id = device_a.create_message("Initial message".to_string(), Vec::new()).await?;
+        let _msg2_id = device_b.create_message("B message".to_string(), Vec::new()).await?;
+        let _msg3_id = device_c.create_message("C message".to_string(), Vec::new()).await?;
 
         println!("✅ All devices created messages independently");
 

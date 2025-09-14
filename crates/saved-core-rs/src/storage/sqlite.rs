@@ -292,7 +292,7 @@ impl Storage for SqliteStorage {
     async fn get_all_messages(&self) -> Result<Vec<Message>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
-            "SELECT id, content, created_at, is_deleted, is_purged FROM messages ORDER BY created_at"
+            "SELECT id, content, created_at, is_deleted, is_purged FROM messages WHERE is_deleted = 0 ORDER BY created_at"
         )?;
         
         let rows = stmt.query_map([], |row| {

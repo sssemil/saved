@@ -149,7 +149,7 @@ impl SyncManager {
         );
         
         let parents = self.event_log.get_heads().iter().cloned().collect();
-        let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation);
+        let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation.clone());
         let op_hash = op.hash();
         
         // Add to event log
@@ -157,6 +157,41 @@ impl SyncManager {
         
         // Store in database
         self.storage.store_operation(&op).await?;
+        
+        // Also create and store Message objects for testing
+        match operation {
+            Operation::CreateMessage { msg_id, body, created_at, .. } => {
+                let message = crate::types::Message {
+                    id: crate::types::MessageId(msg_id),
+                    content: body,
+                    created_at,
+                    is_deleted: false,
+                    is_purged: false,
+                };
+                self.storage.store_message(&message).await?;
+            }
+            Operation::EditMessage { msg_id, body, .. } => {
+                // Update existing message
+                if let Some(mut message) = self.storage.get_message(&crate::types::MessageId(msg_id)).await? {
+                    message.content = body;
+                    self.storage.store_message(&message).await?;
+                }
+            }
+            Operation::DeleteMessage { msg_id, .. } => {
+                // Mark message as deleted
+                if let Some(mut message) = self.storage.get_message(&crate::types::MessageId(msg_id)).await? {
+                    message.is_deleted = true;
+                    self.storage.store_message(&message).await?;
+                }
+            }
+            Operation::Purge { msg_id, .. } => {
+                // Remove message completely
+                self.storage.delete_message(&crate::types::MessageId(msg_id)).await?;
+            }
+            _ => {
+                // Other operations don't need message handling
+            }
+        }
         
         Ok(op_hash)
     }
@@ -197,5 +232,10 @@ impl SyncManager {
         let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation);
         
         Ok(op)
+    }
+
+    /// Get all messages from storage (for testing)
+    pub async fn get_all_messages(&self) -> Result<Vec<crate::types::Message>> {
+        self.storage.get_all_messages().await
     }
 }

@@ -75,7 +75,11 @@ impl Storage for MemoryStorage {
 
     async fn get_all_messages(&self) -> Result<Vec<Message>> {
         let messages = self.messages.read().await;
-        Ok(messages.values().cloned().collect())
+        // Filter out deleted messages
+        Ok(messages.values()
+            .filter(|msg| !msg.is_deleted)
+            .cloned()
+            .collect())
     }
 
     async fn get_message(&self, message_id: &MessageId) -> Result<Option<Message>> {

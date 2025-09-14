@@ -26,6 +26,7 @@ pub async fn link_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
     };
 
     // Open account
@@ -98,6 +99,7 @@ pub async fn accept_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
     };
 
     // Open account
@@ -134,6 +136,7 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
     };
 
     // Open account

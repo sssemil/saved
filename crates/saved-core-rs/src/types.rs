@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use url::Url;
-use crate::storage::{Storage, StorageConfig, StorageBackend, SqliteStorage, MemoryStorage};
+use crate::storage::{Storage, StorageBackend, SqliteStorage, MemoryStorage};
 use crate::sync;
 use crate::crypto;
 
@@ -76,6 +76,8 @@ pub struct Config {
     pub chunk_size: usize,
     /// Maximum number of parallel chunk streams per peer
     pub max_parallel_chunks: usize,
+    /// Storage backend to use (default: SQLite)
+    pub storage_backend: StorageBackend,
 }
 
 impl Default for Config {
@@ -89,6 +91,7 @@ impl Default for Config {
             use_kademlia: false,
             chunk_size: 2 * 1024 * 1024, // 2 MiB
             max_parallel_chunks: 4,
+            storage_backend: StorageBackend::Sqlite,
         }
     }
 }
@@ -129,14 +132,14 @@ pub struct QrPayload {
 pub struct AccountHandle {
     sync_manager: sync::SyncManager,
     event_sender: mpsc::UnboundedSender<Event>,
+    _event_receiver: mpsc::UnboundedReceiver<Event>, // Keep receiver alive to prevent SendError
 }
 
 impl AccountHandle {
     /// Create a new account or open an existing one
     pub async fn create_or_open(config: Config) -> crate::Result<Self> {
         // Create storage based on config
-        let storage_config = StorageConfig::sqlite(config.storage_path.clone());
-        let storage: Box<dyn Storage> = match storage_config.backend {
+        let storage: Box<dyn Storage> = match config.storage_backend {
             StorageBackend::Sqlite => {
                 let mut sqlite_storage = SqliteStorage::open(config.storage_path.clone())?;
                 sqlite_storage.init().await?;
@@ -150,7 +153,7 @@ impl AccountHandle {
         };
         
         // Create event channel
-        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let (event_sender, event_receiver) = mpsc::unbounded_channel();
         
         // Create sync manager
         let vault_key = crypto::generate_vault_key();
@@ -160,6 +163,7 @@ impl AccountHandle {
         Ok(Self {
             sync_manager,
             event_sender,
+            _event_receiver: event_receiver,
         })
     }
 
@@ -228,8 +232,9 @@ impl AccountHandle {
 
     /// Subscribe to events from the account
     pub async fn subscribe(&self) -> mpsc::UnboundedReceiver<Event> {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        // TODO: Implement event subscription
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        // TODO: Implement proper event subscription that forwards events from the main channel
+        // For now, return a new channel that won't receive any events
         receiver
     }
 
@@ -252,22 +257,8 @@ impl AccountHandle {
 
     /// List all messages (for testing)
     pub async fn list_messages(&self) -> crate::Result<Vec<Message>> {
-        // For testing, we'll create a temporary storage instance
-        // In a real implementation, this would be properly exposed
-        let storage_config = StorageConfig::sqlite(self.sync_manager.storage_path.clone());
-        let storage: Box<dyn Storage> = match storage_config.backend {
-            StorageBackend::Sqlite => {
-                let mut sqlite_storage = SqliteStorage::open(self.sync_manager.storage_path.clone())?;
-                sqlite_storage.init().await?;
-                Box::new(sqlite_storage)
-            }
-            StorageBackend::Memory => {
-                let mut memory_storage = MemoryStorage::new();
-                memory_storage.init().await?;
-                Box::new(memory_storage)
-            }
-        };
-        storage.get_all_messages().await
+        // Use the same storage instance that the sync manager is using
+        self.sync_manager.get_all_messages().await
     }
 
     /// Get sync manager (for testing)
@@ -275,23 +266,4 @@ impl AccountHandle {
         &mut self.sync_manager
     }
 
-    /// Create a test account with in-memory storage
-    pub async fn create_test_account(config: Config) -> crate::Result<Self> {
-        // Create in-memory storage for testing
-        let mut storage = MemoryStorage::new();
-        storage.init().await?;
-        
-        // Create event channel with unbounded capacity for testing
-        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        
-        // Create sync manager
-        let vault_key = crypto::generate_vault_key();
-        let device_key = crypto::DeviceKey::generate();
-        let sync_manager = sync::SyncManager::new(Box::new(storage), config.storage_path.clone(), vault_key, device_key, event_sender.clone());
-        
-        Ok(Self {
-            sync_manager,
-            event_sender,
-        })
-    }
 }
