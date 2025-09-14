@@ -42,6 +42,7 @@
 pub mod crypto;
 pub mod error;
 pub mod events;
+pub mod networking;
 pub mod protobuf;
 pub mod storage;
 pub mod sync;

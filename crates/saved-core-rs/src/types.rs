@@ -146,6 +146,7 @@ pub struct AccountHandle {
     sync_manager: sync::SyncManager,
     event_sender: mpsc::UnboundedSender<Event>,
     _event_receiver: mpsc::UnboundedReceiver<Event>, // Keep receiver alive to prevent SendError
+    network_manager: Option<crate::networking::NetworkManager>,
 }
 
 impl AccountHandle {
@@ -209,6 +210,7 @@ impl AccountHandle {
             sync_manager,
             event_sender,
             _event_receiver: event_receiver,
+            network_manager: None,
         })
     }
 
@@ -273,9 +275,11 @@ impl AccountHandle {
         self.event_sender.send(event)
             .map_err(|e| crate::error::Error::Network(format!("Failed to send revocation event: {}", e)))?;
         
-        // TODO: Disconnect device if connected
-        // This would require network manager integration to actually disconnect the peer
-        // For now, the event system will handle notifying other components
+        // Disconnect device if connected via network manager
+        if let Some(ref mut network_manager) = self.network_manager {
+            // Disconnect the device by device_id
+            network_manager.disconnect_peer(device_id.to_string()).await?;
+        }
         
         Ok(())
     }
@@ -493,11 +497,7 @@ impl AccountHandle {
 
     /// Start the network layer
     pub async fn start_network(&mut self) -> crate::Result<()> {
-        // Initialize network manager with device authentication
-        // TODO: Implement proper network manager initialization
-        // For now, we'll just verify device certificates
-        
-        // Verify device certificates for all authorized devices
+        // Verify device certificates for all authorized devices first
         let authorized_devices = self.sync_manager.storage().get_authorized_devices().await?;
         for (device_id, cert_bytes) in authorized_devices {
             let device_cert: crate::crypto::DeviceCert = bincode::deserialize(&cert_bytes)
@@ -513,9 +513,41 @@ impl AccountHandle {
             }
         }
         
-        // TODO: Start network discovery and connection
-        // This would require proper network manager implementation
+        // Initialize network manager if not already initialized
+        if self.network_manager.is_none() {
+            // Get device key for networking
+            let device_key = self.sync_manager.storage().get_device_key().await?;
+            
+            // Create event sender for network events
+            let (network_event_sender, _network_event_receiver) = mpsc::unbounded_channel();
+            
+            // Create network manager
+            let network_manager = crate::networking::NetworkManager::new(
+                device_key,
+                network_event_sender,
+                self.sync_manager.event_log().clone(),
+            ).await?;
+            
+            self.network_manager = Some(network_manager);
+        }
         
+        // Start listening on default addresses
+        if let Some(ref mut network_manager) = self.network_manager {
+            let default_addresses = vec![
+                "/ip4/0.0.0.0/udp/0/quic-v1".to_string(),
+                "/ip4/0.0.0.0/tcp/0".to_string(),
+            ];
+            network_manager.start_listening(default_addresses).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Run the network event loop (blocking)
+    pub async fn run_network(&mut self) -> crate::Result<()> {
+        if let Some(ref mut network_manager) = self.network_manager {
+            network_manager.run().await?;
+        }
         Ok(())
     }
 
@@ -547,23 +579,23 @@ impl AccountHandle {
         let heads = self.sync_manager.event_log().get_heads();
         
         // Create announcement message
-        let _announcement = crate::protobuf::AnnounceHeads {
+        let announcement = crate::protobuf::AnnounceHeads {
             feed_id: "local-feed".to_string(),
             lamport: heads.len() as u64,
             heads: heads.iter().map(|h| h.to_vec()).collect(),
         };
         
-        // Send announcement event
-        let event = Event::SyncProgress { 
-            done: heads.len() as u64, 
-            total: heads.len() as u64 
-        };
-        let _ = self.event_sender.send(event);
-        
-        // TODO: In a real implementation, this would:
-        // 1. Get all connected and authorized peers from the network manager
-        // 2. Send the announcement to each peer
-        // 3. Handle responses and update peer state
+        // Send announcement to network manager if available
+        if let Some(ref network_manager) = self.network_manager {
+            // In a real implementation, this would use the network manager's
+            // gossipsub protocol to announce to all connected peers
+            // For now, we'll just send a local event
+            let event = Event::SyncProgress { 
+                done: heads.len() as u64, 
+                total: heads.len() as u64 
+            };
+            let _ = self.event_sender.send(event);
+        }
     }
 
     /// List all messages (for testing)
