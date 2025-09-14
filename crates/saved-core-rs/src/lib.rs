@@ -325,4 +325,80 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_distributed_account_key_scenario() {
+        // Test the scenario: phone dies, laptop can authorize new phone
+        let config_laptop = crate::types::Config {
+            storage_path: std::path::PathBuf::from("test_laptop"),
+            storage_backend: crate::storage::StorageBackend::Memory,
+            network_port: 0,
+            enable_mdns: false,
+            allow_public_relays: false,
+            bootstrap_multiaddrs: Vec::new(),
+            use_kademlia: false,
+            chunk_size: 1024,
+            max_parallel_chunks: 4,
+        };
+        let config_phone = crate::types::Config {
+            storage_path: std::path::PathBuf::from("test_phone"),
+            storage_backend: crate::storage::StorageBackend::Memory,
+            network_port: 0,
+            enable_mdns: false,
+            allow_public_relays: false,
+            bootstrap_multiaddrs: Vec::new(),
+            use_kademlia: false,
+            chunk_size: 1024,
+            max_parallel_chunks: 4,
+        };
+
+        // Create laptop as account key holder
+        let mut laptop = crate::types::AccountHandle::create_account_key_holder(config_laptop).await.unwrap();
+        
+        // Create new phone as regular device
+        let mut new_phone = crate::types::AccountHandle::create_or_open(config_phone).await.unwrap();
+
+        // Verify laptop has account private key
+        assert!(laptop.has_account_private_key().await.unwrap());
+        
+        // Verify new phone doesn't have account private key initially
+        assert!(!new_phone.has_account_private_key().await.unwrap());
+        
+        // Simulate new phone requesting authorization
+        let phone_device_key = crate::crypto::DeviceKey::generate();
+        let account_key = crate::crypto::AccountKey::generate(); // This would be the same as laptop's
+        let phone_cert = crate::crypto::DeviceCert::new(
+            phone_device_key.public_key_bytes(),
+            &account_key,
+            None,
+        ).unwrap();
+        
+        // Laptop can authorize the new phone
+        laptop.authorize_device_with_account_key(phone_cert).await.unwrap();
+        
+        // Verify new phone is now authorized
+        let device_id = format!("device_{:02x}{:02x}{:02x}{:02x}", 
+            phone_device_key.public_key_bytes()[0], 
+            phone_device_key.public_key_bytes()[1], 
+            phone_device_key.public_key_bytes()[2], 
+            phone_device_key.public_key_bytes()[3]);
+        assert!(laptop.is_device_authorized(&device_id).await.unwrap());
+        
+        // Test account key sharing capability
+        let shared_key = laptop.share_account_key("new-phone").await.unwrap();
+        assert!(!shared_key.is_empty()); // Should return encrypted key
+        
+        // New phone can accept the shared account key
+        new_phone.accept_shared_account_key(&shared_key).await.unwrap();
+        
+        // Now new phone should have account key info
+        let phone_key_info = new_phone.get_account_key_info().await.unwrap();
+        assert!(phone_key_info.is_some());
+        assert!(phone_key_info.unwrap().has_private_key);
+        
+        // Verify new phone now has account private key
+        assert!(new_phone.has_account_private_key().await.unwrap());
+        
+        println!("✅ Distributed account key scenario works end-to-end!");
+    }
 }

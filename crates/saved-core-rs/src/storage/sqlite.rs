@@ -116,6 +116,29 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Account key info table (public metadata)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS account_key_info (
+                id INTEGER PRIMARY KEY,
+                public_key BLOB NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                version INTEGER NOT NULL,
+                has_private_key INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Shared account keys table (for device-to-device sharing)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS shared_account_keys (
+                id INTEGER PRIMARY KEY,
+                encrypted_key BLOB NOT NULL,
+                shared_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         // Vault keys table (encrypted with passphrase)
         db.execute(
             "CREATE TABLE IF NOT EXISTS vault_keys (
@@ -456,7 +479,74 @@ impl Storage for SqliteStorage {
             let encrypted_key: Vec<u8> = row.get(0)?;
             Ok(encrypted_key)
         });
+        
+        match result {
+            Ok(key) => Ok(Some(key)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
 
+    async fn store_account_key_info(&self, key_info: &crate::crypto::AccountKeyInfo) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let created_at = key_info.created_at.timestamp();
+        let expires_at = key_info.expires_at.map(|t| t.timestamp());
+        let has_private_key = if key_info.has_private_key { 1 } else { 0 };
+        
+        db.execute(
+            "INSERT OR REPLACE INTO account_key_info (id, public_key, created_at, expires_at, version, has_private_key) VALUES (1, ?, ?, ?, ?, ?)",
+            params![key_info.public_key, created_at, expires_at, key_info.version, has_private_key],
+        )?;
+        Ok(())
+    }
+
+    async fn get_account_key_info(&self) -> Result<Option<crate::crypto::AccountKeyInfo>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT public_key, created_at, expires_at, version, has_private_key FROM account_key_info WHERE id = 1")?;
+        let result = stmt.query_row([], |row| {
+            let public_key: Vec<u8> = row.get(0)?;
+            let created_at: i64 = row.get(1)?;
+            let expires_at: Option<i64> = row.get(2)?;
+            let version: u64 = row.get(3)?;
+            let has_private_key: i64 = row.get(4)?;
+            
+            let mut pub_key_bytes = [0u8; 32];
+            pub_key_bytes.copy_from_slice(&public_key[..32]);
+            
+            Ok(crate::crypto::AccountKeyInfo {
+                public_key: pub_key_bytes,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default(),
+                expires_at: expires_at.map(|t| chrono::DateTime::from_timestamp(t, 0).unwrap_or_default()),
+                version,
+                has_private_key: has_private_key != 0,
+            })
+        });
+        
+        match result {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn store_shared_account_key(&self, encrypted_account_key: &[u8]) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let shared_at = chrono::Utc::now().timestamp();
+        db.execute(
+            "INSERT OR REPLACE INTO shared_account_keys (id, encrypted_key, shared_at) VALUES (1, ?, ?)",
+            params![encrypted_account_key, shared_at],
+        )?;
+        Ok(())
+    }
+
+    async fn get_shared_account_key(&self) -> Result<Option<Vec<u8>>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT encrypted_key FROM shared_account_keys WHERE id = 1")?;
+        let result = stmt.query_row([], |row| {
+            let encrypted_key: Vec<u8> = row.get(0)?;
+            Ok(encrypted_key)
+        });
+        
         match result {
             Ok(key) => Ok(Some(key)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

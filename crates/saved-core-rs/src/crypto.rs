@@ -25,11 +25,26 @@ pub type VaultKey = [u8; 32];
 /// 24-byte nonce for XChaCha20-Poly1305
 pub type NonceBytes = [u8; 24];
 
-/// Account key (ed25519) - long-lived, never leaves devices
+/// Account key (ed25519) - long-lived, can be shared between devices
 #[derive(Debug, Clone)]
 pub struct AccountKey {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,
+}
+
+/// Account key metadata for distributed management
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AccountKeyInfo {
+    /// The account public key
+    pub public_key: [u8; 32],
+    /// When this account key was created
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Optional expiration time
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Version number for key rotation
+    pub version: u64,
+    /// Whether this device has the private key
+    pub has_private_key: bool,
 }
 
 impl AccountKey {
@@ -73,6 +88,51 @@ impl AccountKey {
         self.verifying_key
             .verify(data, signature)
             .map_err(|e| Error::Crypto(format!("Signature verification failed: {}", e)))
+    }
+
+    /// Create account key info for this key
+    pub fn to_info(&self, version: u64, has_private_key: bool) -> AccountKeyInfo {
+        AccountKeyInfo {
+            public_key: self.public_key_bytes(),
+            created_at: chrono::Utc::now(),
+            expires_at: None,
+            version,
+            has_private_key,
+        }
+    }
+
+    /// Create account key info with expiration
+    pub fn to_info_with_expiration(&self, version: u64, has_private_key: bool, expires_at: chrono::DateTime<chrono::Utc>) -> AccountKeyInfo {
+        AccountKeyInfo {
+            public_key: self.public_key_bytes(),
+            created_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            version,
+            has_private_key,
+        }
+    }
+
+    /// Create a new account key from existing private key bytes
+    pub fn from_private_bytes(bytes: &[u8; 32]) -> Result<Self> {
+        let signing_key = SigningKey::from_bytes(bytes);
+        let verifying_key = signing_key.verifying_key();
+        Ok(Self {
+            signing_key,
+            verifying_key,
+        })
+    }
+
+    /// Create account key from public key only (for verification)
+    pub fn from_public_bytes(bytes: &[u8; 32]) -> Result<Self> {
+        let verifying_key = VerifyingKey::from_bytes(bytes)
+            .map_err(|e| Error::Crypto(format!("Invalid public key: {}", e)))?;
+        // We can't create a signing key from public key, so we'll use a dummy one
+        // This should only be used for verification
+        let signing_key = SigningKey::generate(&mut OsRng);
+        Ok(Self {
+            signing_key,
+            verifying_key,
+        })
     }
 }
 

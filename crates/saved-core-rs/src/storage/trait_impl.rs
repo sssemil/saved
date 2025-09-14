@@ -45,6 +45,18 @@ pub trait Storage: Send + Sync {
     /// Retrieve the encrypted account key
     async fn get_account_key(&self) -> Result<Option<Vec<u8>>>;
 
+    /// Store account key info (public metadata)
+    async fn store_account_key_info(&self, key_info: &crate::crypto::AccountKeyInfo) -> Result<()>;
+
+    /// Get account key info
+    async fn get_account_key_info(&self) -> Result<Option<crate::crypto::AccountKeyInfo>>;
+
+    /// Store account key for sharing with other devices (encrypted)
+    async fn store_shared_account_key(&self, encrypted_account_key: &[u8]) -> Result<()>;
+
+    /// Get shared account key (encrypted)
+    async fn get_shared_account_key(&self) -> Result<Option<Vec<u8>>>;
+
     /// Store the vault key (encrypted with passphrase)
     async fn store_vault_key(&self, encrypted_vault_key: &[u8]) -> Result<()>;
 

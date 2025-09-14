@@ -269,4 +269,14 @@ impl SyncManager {
     pub async fn get_all_messages(&self) -> Result<Vec<crate::types::Message>> {
         self.storage.get_all_messages().await
     }
+
+    /// Get storage reference for account key operations
+    pub fn storage(&self) -> &dyn Storage {
+        self.storage.as_ref()
+    }
+
+    /// Get mutable storage reference for account key operations
+    pub fn storage_mut(&mut self) -> &mut dyn Storage {
+        self.storage.as_mut()
+    }
 }

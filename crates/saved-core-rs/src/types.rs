@@ -142,6 +142,17 @@ pub struct AccountHandle {
 impl AccountHandle {
     /// Create a new account or open an existing one
     pub async fn create_or_open(config: Config) -> crate::Result<Self> {
+        Self::create_or_open_with_account_key(config, None).await
+    }
+
+    /// Create a new account with account key authority
+    pub async fn create_account_key_holder(config: Config) -> crate::Result<Self> {
+        let account_key = crate::crypto::AccountKey::generate();
+        Self::create_or_open_with_account_key(config, Some(account_key)).await
+    }
+
+    /// Create a new account or open an existing one with optional account key
+    pub async fn create_or_open_with_account_key(config: Config, account_key: Option<crate::crypto::AccountKey>) -> crate::Result<Self> {
         // Create storage based on config
         let storage: Box<dyn Storage> = match config.storage_backend {
             StorageBackend::Sqlite => {
@@ -162,13 +173,27 @@ impl AccountHandle {
         // Create sync manager
         let vault_key = crypto::generate_vault_key();
         let device_key = crypto::DeviceKey::generate();
-        let sync_manager = sync::SyncManager::new(
+        let mut sync_manager = sync::SyncManager::new(
             storage,
             config.storage_path.clone(),
             vault_key,
             device_key,
             event_sender.clone(),
         );
+
+        // Initialize account key if provided
+        if let Some(account_key) = account_key {
+            // Store the account key (encrypted with passphrase)
+            let encrypted_account_key = crate::crypto::protect_vault_key_with_passphrase(
+                &account_key.private_key_bytes(),
+                "default_passphrase", // TODO: Get from config
+            )?;
+            sync_manager.storage_mut().store_account_key(encrypted_account_key.as_bytes()).await?;
+
+            // Store account key info
+            let key_info = account_key.to_info(1, true);
+            sync_manager.storage_mut().store_account_key_info(&key_info).await?;
+        }
 
         Ok(Self {
             sync_manager,
@@ -205,9 +230,95 @@ impl AccountHandle {
     }
 
     /// Check if a device is authorized for this account
-    pub async fn is_device_authorized(&self, _device_id: &str) -> crate::Result<bool> {
-        // TODO: Check device authorization in storage
-        Ok(false) // Default to unauthorized for security
+    pub async fn is_device_authorized(&self, device_id: &str) -> crate::Result<bool> {
+        self.sync_manager.storage().is_device_authorized(device_id).await
+    }
+
+    /// Share account key with another device (encrypted)
+    pub async fn share_account_key(&mut self, _target_device_id: &str) -> crate::Result<Vec<u8>> {
+        // Check if this device has the account private key
+        if !self.has_account_private_key().await? {
+            return Err(crate::error::Error::Crypto("This device does not have the account private key".to_string()));
+        }
+
+        // Get the encrypted account key from storage
+        let encrypted_account_key = self.sync_manager.storage().get_account_key().await?
+            .ok_or_else(|| crate::error::Error::Crypto("Account key not found in storage".to_string()))?;
+
+        // Store the shared account key for the target device
+        self.sync_manager.storage_mut().store_shared_account_key(&encrypted_account_key).await?;
+
+        // For now, return the encrypted key directly
+        // TODO: In a real implementation, this would be encrypted with the target device's public key
+        Ok(encrypted_account_key)
+    }
+
+    /// Accept shared account key from another device
+    pub async fn accept_shared_account_key(&mut self, encrypted_account_key: &[u8]) -> crate::Result<()> {
+        // Store the shared account key in local storage
+        self.sync_manager.storage_mut().store_account_key(encrypted_account_key).await?;
+
+        // Get the account key info to update it
+        if let Some(mut key_info) = self.get_account_key_info().await? {
+            // Update to indicate this device now has the private key
+            key_info.has_private_key = true;
+            self.sync_manager.storage_mut().store_account_key_info(&key_info).await?;
+        } else {
+            // Create new account key info if none exists
+            // TODO: In a real implementation, we'd need to extract the public key from the encrypted key
+            // For now, create a placeholder
+            let key_info = crate::crypto::AccountKeyInfo {
+                public_key: [0u8; 32], // Placeholder
+                created_at: chrono::Utc::now(),
+                expires_at: None,
+                version: 1,
+                has_private_key: true,
+            };
+            self.sync_manager.storage_mut().store_account_key_info(&key_info).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get account key info (public metadata)
+    pub async fn get_account_key_info(&self) -> crate::Result<Option<crate::crypto::AccountKeyInfo>> {
+        self.sync_manager.storage().get_account_key_info().await
+    }
+
+    /// Check if this device has the account private key
+    pub async fn has_account_private_key(&self) -> crate::Result<bool> {
+        if let Some(info) = self.get_account_key_info().await? {
+            Ok(info.has_private_key)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Authorize a new device using distributed account key
+    pub async fn authorize_device_with_account_key(&mut self, device_cert: crate::crypto::DeviceCert) -> crate::Result<()> {
+        // Check if this device has the account private key
+        if !self.has_account_private_key().await? {
+            return Err(crate::error::Error::Crypto("This device does not have the account private key to authorize new devices".to_string()));
+        }
+
+        // Verify the device certificate is valid
+        // TODO: In a real implementation, we'd verify the certificate against the account key
+        // For now, we'll just store the device as authorized
+
+        // Extract device ID from the certificate (using public key as ID)
+        let device_id = format!("device_{:02x}{:02x}{:02x}{:02x}", 
+            device_cert.device_pubkey[0], 
+            device_cert.device_pubkey[1], 
+            device_cert.device_pubkey[2], 
+            device_cert.device_pubkey[3]);
+        
+        // Store the device certificate in authorized devices
+        let cert_bytes = bincode::serialize(&device_cert)
+            .map_err(|e| crate::error::Error::Crypto(format!("Failed to serialize device cert: {}", e)))?;
+        
+        self.sync_manager.storage_mut().store_authorized_device(&device_id, &cert_bytes).await?;
+
+        Ok(())
     }
 
     /// Generate a QR code payload for device linking

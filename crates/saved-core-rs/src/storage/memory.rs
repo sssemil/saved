@@ -14,6 +14,8 @@ pub struct MemoryStorage {
     messages: Arc<RwLock<HashMap<MessageId, Message>>>,
     chunks: Arc<RwLock<HashMap<[u8; 32], Vec<u8>>>>,
     account_key: Arc<RwLock<Option<Vec<u8>>>>,
+    account_key_info: Arc<RwLock<Option<crate::crypto::AccountKeyInfo>>>,
+    shared_account_key: Arc<RwLock<Option<Vec<u8>>>>,
     vault_key: Arc<RwLock<Option<Vec<u8>>>>,
     authorized_devices: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
@@ -25,6 +27,8 @@ impl MemoryStorage {
             messages: Arc::new(RwLock::new(HashMap::new())),
             chunks: Arc::new(RwLock::new(HashMap::new())),
             account_key: Arc::new(RwLock::new(None)),
+            account_key_info: Arc::new(RwLock::new(None)),
+            shared_account_key: Arc::new(RwLock::new(None)),
             vault_key: Arc::new(RwLock::new(None)),
             authorized_devices: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -116,6 +120,28 @@ impl Storage for MemoryStorage {
     async fn get_account_key(&self) -> Result<Option<Vec<u8>>> {
         let account_key = self.account_key.read().await;
         Ok(account_key.clone())
+    }
+
+    async fn store_account_key_info(&self, key_info: &crate::crypto::AccountKeyInfo) -> Result<()> {
+        let mut info = self.account_key_info.write().await;
+        *info = Some(key_info.clone());
+        Ok(())
+    }
+
+    async fn get_account_key_info(&self) -> Result<Option<crate::crypto::AccountKeyInfo>> {
+        let info = self.account_key_info.read().await;
+        Ok(info.clone())
+    }
+
+    async fn store_shared_account_key(&self, encrypted_account_key: &[u8]) -> Result<()> {
+        let mut shared_key = self.shared_account_key.write().await;
+        *shared_key = Some(encrypted_account_key.to_vec());
+        Ok(())
+    }
+
+    async fn get_shared_account_key(&self) -> Result<Option<Vec<u8>>> {
+        let shared_key = self.shared_account_key.read().await;
+        Ok(shared_key.clone())
     }
 
     async fn store_vault_key(&self, encrypted_vault_key: &[u8]) -> Result<()> {
@@ -304,5 +330,76 @@ mod tests {
         // Check remaining devices
         let devices = storage.get_authorized_devices().await.unwrap();
         assert_eq!(devices.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_account_key_info_storage() {
+        let storage = MemoryStorage::new();
+        
+        // Initially no account key info
+        assert!(storage.get_account_key_info().await.unwrap().is_none());
+        
+        // Store account key info
+        let key_info = crate::crypto::AccountKeyInfo {
+            public_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+            created_at: chrono::Utc::now(),
+            expires_at: None,
+            version: 1,
+            has_private_key: true,
+        };
+        
+        storage.store_account_key_info(&key_info).await.unwrap();
+        
+        // Retrieve and verify
+        let retrieved = storage.get_account_key_info().await.unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.public_key, key_info.public_key);
+        assert_eq!(retrieved.version, 1);
+        assert!(retrieved.has_private_key);
+    }
+
+    #[tokio::test]
+    async fn test_shared_account_key_storage() {
+        let storage = MemoryStorage::new();
+        
+        // Initially no shared account key
+        assert!(storage.get_shared_account_key().await.unwrap().is_none());
+        
+        // Store shared account key
+        let encrypted_key = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        storage.store_shared_account_key(&encrypted_key).await.unwrap();
+        
+        // Retrieve and verify
+        let retrieved = storage.get_shared_account_key().await.unwrap();
+        assert_eq!(retrieved, Some(encrypted_key));
+        
+        // Overwrite with new key
+        let new_encrypted_key = vec![11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+        storage.store_shared_account_key(&new_encrypted_key).await.unwrap();
+        
+        let retrieved = storage.get_shared_account_key().await.unwrap();
+        assert_eq!(retrieved, Some(new_encrypted_key));
+    }
+
+    #[tokio::test]
+    async fn test_account_key_info_with_expiration() {
+        let storage = MemoryStorage::new();
+        
+        let expires_at = chrono::Utc::now() + chrono::Duration::days(30);
+        let key_info = crate::crypto::AccountKeyInfo {
+            public_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+            created_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            version: 2,
+            has_private_key: false,
+        };
+        
+        storage.store_account_key_info(&key_info).await.unwrap();
+        
+        let retrieved = storage.get_account_key_info().await.unwrap().unwrap();
+        assert_eq!(retrieved.version, 2);
+        assert!(!retrieved.has_private_key);
+        assert!(retrieved.expires_at.is_some());
     }
 }
