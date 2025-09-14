@@ -125,6 +125,16 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Authorized devices table
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS authorized_devices (
+                device_id TEXT PRIMARY KEY,
+                device_cert BLOB NOT NULL,
+                authorized_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -446,7 +456,7 @@ impl Storage for SqliteStorage {
             let encrypted_key: Vec<u8> = row.get(0)?;
             Ok(encrypted_key)
         });
-        
+
         match result {
             Ok(key) => Ok(Some(key)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -470,10 +480,57 @@ impl Storage for SqliteStorage {
             let encrypted_key: Vec<u8> = row.get(0)?;
             Ok(encrypted_key)
         });
-        
+
         match result {
             Ok(key) => Ok(Some(key)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn store_authorized_device(&self, device_id: &str, device_cert: &[u8]) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let authorized_at = chrono::Utc::now().timestamp();
+        db.execute(
+            "INSERT OR REPLACE INTO authorized_devices (device_id, device_cert, authorized_at) VALUES (?, ?, ?)",
+            params![device_id, device_cert, authorized_at],
+        )?;
+        Ok(())
+    }
+
+    async fn get_authorized_devices(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT device_id, device_cert FROM authorized_devices")?;
+        let rows = stmt.query_map([], |row| {
+            let device_id: String = row.get(0)?;
+            let device_cert: Vec<u8> = row.get(1)?;
+            Ok((device_id, device_cert))
+        })?;
+
+        let mut devices = Vec::new();
+        for row in rows {
+            devices.push(row?);
+        }
+        Ok(devices)
+    }
+
+    async fn revoke_device_authorization(&self, device_id: &str) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "DELETE FROM authorized_devices WHERE device_id = ?",
+            params![device_id],
+        )?;
+        Ok(())
+    }
+
+    async fn is_device_authorized(&self, device_id: &str) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT 1 FROM authorized_devices WHERE device_id = ?")?;
+        let result = stmt.query_row(params![device_id], |_| Ok(true));
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
             Err(e) => Err(e.into()),
         }
     }

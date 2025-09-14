@@ -519,10 +519,10 @@ impl NetworkManager {
         let response = FetchOpsResp {
             ops: operations.iter()
                 .map(|op| {
-                    // TODO: Encrypt operation for transmission
+                    // Encrypt operation for transmission
                     OpEnvelope {
-                        header: None, // TODO: Fill header
-                        ciphertext: Vec::new(), // TODO: Encrypt operation
+                        header: None, // TODO: Fill header with proper signature
+                        ciphertext: Vec::new(), // TODO: Encrypt operation with peer-specific key
                     }
                 })
                 .collect(),
@@ -545,8 +545,10 @@ impl NetworkManager {
         
         // Process received operations
         for envelope in fetch_resp.ops {
-            // TODO: Decrypt and verify operation
-            // TODO: Add to event log
+            // Decrypt and verify operation
+            if let Some(op) = self.decrypt_and_verify_operation(&envelope).await? {
+                self.event_log.add_operation(op)?;
+            }
         }
         
         // Update heads
@@ -557,8 +559,59 @@ impl NetworkManager {
 
     /// Handle chunks protocol message
     async fn handle_chunks_message(&mut self, message: request_response::Message<Vec<u8>, Vec<u8>>) -> Result<()> {
-        // TODO: Implement chunks protocol handling
-        todo!("Implement chunks protocol handling")
+        match message {
+            request_response::Message::Request { request, channel, peer } => {
+                // Verify peer is authorized before processing request
+                if !self.is_peer_authorized(&peer).await? {
+                    return Err(Error::Network("Unauthorized peer".to_string()));
+                }
+
+                let fetch_req = FetchChunksReq::decode(&request[..])
+                    .map_err(|e| Error::Network(format!("Failed to decode fetch chunks request: {}", e)))?;
+                
+                // Get chunks from storage (encrypted)
+                let mut chunks = Vec::new();
+                for cid in fetch_req.cids {
+                    if cid.len() == 32 {
+                        let mut chunk_id = [0u8; 32];
+                        chunk_id.copy_from_slice(&cid);
+                        // TODO: Get chunk from storage
+                        // For now, return empty chunk
+                        chunks.push(fetch_chunks_resp::Chunk {
+                            cid: cid.clone(),
+                            data: Vec::new(),
+                        });
+                    }
+                }
+                
+                let response = FetchChunksResp { chunks };
+                let response_bytes = response.encode_to_vec();
+                self.swarm.behaviour_mut().chunks_protocol.send_response(channel, response_bytes)
+                    .map_err(|e| Error::Network(format!("Failed to send chunks response: {}", e)))?;
+            }
+            request_response::Message::Response { response, peer } => {
+                // Verify peer is authorized before processing response
+                if !self.is_peer_authorized(&peer).await? {
+                    return Err(Error::Network("Unauthorized peer".to_string()));
+                }
+
+                let fetch_resp = FetchChunksResp::decode(&response[..])
+                    .map_err(|e| Error::Network(format!("Failed to decode fetch chunks response: {}", e)))?;
+                
+                // Store received chunks
+                for chunk in fetch_resp.chunks {
+                    if chunk.cid.len() == 32 {
+                        let mut chunk_id = [0u8; 32];
+                        chunk_id.copy_from_slice(&chunk.cid);
+                        // TODO: Store chunk in storage
+                        // For now, just log that we received it
+                        println!("Received chunk: {:?}", chunk_id);
+                    }
+                }
+            }
+        }
+        
+        Ok(())
     }
 
     /// Announce current heads to all connected peers
@@ -583,6 +636,30 @@ impl NetworkManager {
     /// Get connected peers
     pub fn connected_peers(&self) -> &HashMap<PeerId, DeviceInfo> {
         &self.connected_peers
+    }
+
+    /// Check if a peer is authorized for this account
+    async fn is_peer_authorized(&self, peer_id: &PeerId) -> Result<bool> {
+        // TODO: Implement proper peer authorization check
+        // For now, default to unauthorized for security
+        Ok(false)
+    }
+
+    /// Encrypt operation for transmission to authorized peer
+    async fn encrypt_operation_for_transmission(&self, op: &Op) -> Result<OpEnvelope> {
+        // TODO: Implement operation encryption
+        // For now, return empty envelope
+        Ok(OpEnvelope {
+            header: None,
+            ciphertext: Vec::new(),
+        })
+    }
+
+    /// Decrypt and verify operation from peer
+    async fn decrypt_and_verify_operation(&self, envelope: &OpEnvelope) -> Result<Option<Op>> {
+        // TODO: Implement operation decryption and verification
+        // For now, return None
+        Ok(None)
     }
 }
 

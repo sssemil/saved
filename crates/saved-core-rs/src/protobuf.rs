@@ -295,7 +295,9 @@ mod tests {
     fn test_edit_message_serialization() {
         let body = EditMessageBody {
             msg_id: vec![1, 2, 3, 4],
-            payload: Some(edit_message_body::Payload::BodyFull("Updated message".to_string())),
+            payload: Some(edit_message_body::Payload::BodyFull(
+                "Updated message".to_string(),
+            )),
             edited_at_ms: 1234567890,
         };
 

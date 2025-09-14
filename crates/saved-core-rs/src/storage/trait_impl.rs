@@ -51,6 +51,18 @@ pub trait Storage: Send + Sync {
     /// Retrieve the encrypted vault key
     async fn get_vault_key(&self) -> Result<Option<Vec<u8>>>;
 
+    /// Store an authorized device certificate
+    async fn store_authorized_device(&self, device_id: &str, device_cert: &[u8]) -> Result<()>;
+
+    /// Get all authorized device certificates
+    async fn get_authorized_devices(&self) -> Result<Vec<(String, Vec<u8>)>>;
+
+    /// Remove device authorization
+    async fn revoke_device_authorization(&self, device_id: &str) -> Result<()>;
+
+    /// Check if a device is authorized
+    async fn is_device_authorized(&self, device_id: &str) -> Result<bool>;
+
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
 }

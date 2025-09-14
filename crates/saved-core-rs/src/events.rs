@@ -209,7 +209,7 @@ impl Op {
 
         // Decrypt the operation
         let event_key = derive_event_key(vault_key, &header.op_id)?;
-        let nonce = generate_nonce(); // TODO: Extract nonce from envelope
+        let nonce = generate_nonce(); // TODO: Extract nonce from envelope (currently using random nonce)
         let operation_bytes = decrypt(&event_key, &nonce, &envelope.ciphertext)?;
 
         let operation: Operation =
@@ -232,7 +232,7 @@ impl Op {
             lamport: header.lamport,
             parents,
             operation,
-            timestamp: Utc::now(), // TODO: Extract from header
+            timestamp: Utc::now(), // TODO: Extract timestamp from header (currently using current time)
         })
     }
 }

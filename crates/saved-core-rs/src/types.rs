@@ -1,3 +1,4 @@
+
 //! Core types for the SAVED library
 
 use crate::crypto;
@@ -54,6 +55,10 @@ pub struct DeviceInfo {
     pub device_name: String,
     pub last_seen: chrono::DateTime<chrono::Utc>,
     pub is_online: bool,
+    /// Device certificate for authentication
+    pub device_cert: Option<crate::crypto::DeviceCert>,
+    /// Whether this device is authorized for this account
+    pub is_authorized: bool,
 }
 
 /// Configuration for the SAVED account
@@ -179,7 +184,30 @@ impl AccountHandle {
             device_name: "Local Device".to_string(),
             last_seen: chrono::Utc::now(),
             is_online: true,
+            device_cert: None, // TODO: Load from storage
+            is_authorized: true, // Local device is always authorized
         }
+    }
+
+    /// Authorize a new device with a device certificate
+    pub async fn authorize_device(&mut self, _device_cert: crate::crypto::DeviceCert) -> crate::Result<()> {
+        // TODO: Verify device certificate with account key
+        // TODO: Store authorized device in storage
+        // TODO: Send authorization confirmation
+        Ok(())
+    }
+
+    /// Revoke authorization for a device
+    pub async fn revoke_device(&mut self, _device_id: &str) -> crate::Result<()> {
+        // TODO: Remove device from authorized list
+        // TODO: Disconnect device if connected
+        Ok(())
+    }
+
+    /// Check if a device is authorized for this account
+    pub async fn is_device_authorized(&self, _device_id: &str) -> crate::Result<bool> {
+        // TODO: Check device authorization in storage
+        Ok(false) // Default to unauthorized for security
     }
 
     /// Generate a QR code payload for device linking
@@ -199,6 +227,8 @@ impl AccountHandle {
             device_name: "Remote Device".to_string(),
             last_seen: chrono::Utc::now(),
             is_online: true,
+            device_cert: None, // TODO: Extract from QR payload
+            is_authorized: false, // TODO: Verify device certificate
         })
     }
 
@@ -235,7 +265,8 @@ impl AccountHandle {
 
     /// Start the network layer
     pub async fn start_network(&self) -> crate::Result<()> {
-        // TODO: Implement network startup
+        // TODO: Implement network startup with proper device authentication
+        // This should initialize the network manager and verify device certificates
         Ok(())
     }
 
@@ -244,12 +275,14 @@ impl AccountHandle {
         let (_sender, receiver) = mpsc::unbounded_channel();
         // TODO: Implement proper event subscription that forwards events from the main channel
         // For now, return a new channel that won't receive any events
+        // This should create a proper subscription that forwards events from the sync manager
         receiver
     }
 
     /// Force announce current heads to connected peers
     pub async fn force_announce(&self) {
-        // TODO: Implement forced announcement
+        // TODO: Implement forced announcement to all authorized peers
+        // This should trigger a head announcement via the network manager
     }
 
     /// List all messages (for testing)
