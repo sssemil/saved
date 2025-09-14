@@ -685,6 +685,7 @@ impl NetworkManager {
             parents: vec![], // Placeholder - should be actual parent hashes
             signer: device_key.public_key_bytes().to_vec(),
             sig: vec![], // Will be filled after signing
+            timestamp: chrono::Utc::now().timestamp(), // Current timestamp
         };
         
         // Create data to sign: header (without sig) + ciphertext
@@ -756,8 +757,12 @@ impl NetworkManager {
         let header = crate::protobuf::OpHeader::decode(header_bytes)
             .map_err(|e| Error::Crypto(format!("Failed to decode operation header: {}", e)))?;
         
-        // Note: Timestamp checking would be implemented here in a real system
-        // For now, we rely on the lamport timestamp for ordering
+        // Check timestamp (prevent replay attacks)
+        let now = chrono::Utc::now().timestamp();
+        let time_diff = (now - header.timestamp).abs();
+        if time_diff > 300 { // 5 minutes tolerance
+            return Err(Error::Crypto("Operation timestamp too old".to_string()));
+        }
         
         // Verify signature with peer's public key
         if header.sig.is_empty() {

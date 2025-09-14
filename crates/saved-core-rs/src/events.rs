@@ -166,6 +166,7 @@ impl Op {
             parents: self.parents.iter().map(|h| h.to_vec()).collect(),
             signer: device_key.public_key_bytes().to_vec(),
             sig: Vec::new(), // Will be filled after signing
+            timestamp: chrono::Utc::now().timestamp(),
         };
 
         // Sign the header and ciphertext
@@ -424,11 +425,8 @@ fn extract_nonce_from_envelope(envelope: &OpEnvelope) -> Result<[u8; 24]> {
 }
 
 /// Extract timestamp from header
-fn extract_timestamp_from_header(_header: &OpHeader) -> Result<chrono::DateTime<chrono::Utc>> {
-    // For now, use the current time since OpHeader doesn't have a timestamp field
-    // In a real implementation, this would extract the timestamp from the header
-    // The OpHeader struct has: op_id, lamport, parents, signer, sig
-    // We could use the lamport field as a proxy for ordering, but for actual timestamps
-    // we'd need to add a timestamp field to the OpHeader struct
-    Ok(chrono::Utc::now())
+fn extract_timestamp_from_header(header: &OpHeader) -> Result<chrono::DateTime<chrono::Utc>> {
+    // Extract timestamp from the header's timestamp field
+    chrono::DateTime::from_timestamp(header.timestamp, 0)
+        .ok_or_else(|| Error::Sync("Invalid timestamp in operation header".to_string()))
 }
