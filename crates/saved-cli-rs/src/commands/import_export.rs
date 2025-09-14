@@ -19,6 +19,8 @@ pub async fn export_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -72,6 +74,8 @@ pub async fn import_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,

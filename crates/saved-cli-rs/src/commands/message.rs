@@ -24,6 +24,8 @@ pub async fn create_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -58,6 +60,8 @@ pub async fn list_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -114,6 +118,8 @@ pub async fn edit_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -153,6 +159,8 @@ pub async fn delete_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,

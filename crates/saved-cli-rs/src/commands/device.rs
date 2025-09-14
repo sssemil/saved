@@ -19,6 +19,8 @@ pub async fn link_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -89,6 +91,8 @@ pub async fn accept_command(
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -123,6 +127,8 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     // Create configuration
     let config = Config {
         storage_path: account_path.clone(),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
