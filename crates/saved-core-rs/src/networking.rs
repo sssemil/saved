@@ -265,8 +265,10 @@ impl NetworkManager {
         // In a real implementation, this would start listening on the given addresses
         println!("Network manager started listening on {} addresses", addresses.len());
         
-        // Send listening started event
-        let _ = self.event_sender.send(Event::SyncProgress { done: 0, total: 100 });
+        // Send network listening started event
+        let _ = self.event_sender.send(Event::NetworkListeningStarted {
+            addresses: addresses.clone(),
+        });
         
         Ok(())
     }
@@ -332,8 +334,16 @@ impl NetworkManager {
         discovered.insert(device_id.clone(), discovery_info);
         drop(discovered);
         
+        // Send connection attempt started event
+        let _ = self.event_sender.send(Event::ConnectionAttemptStarted {
+            device_id: device_id.clone(),
+            addresses: addresses.clone(),
+        });
+        
         // Simulate connection attempt
+        let connection_start = std::time::Instant::now();
         let connection_result = self.simulate_connection_attempt(&device_id, addresses).await;
+        let connection_time = connection_start.elapsed();
         
         // Update connection state based on result
         let mut peers = self.connected_peers.lock().await;
@@ -343,16 +353,33 @@ impl NetworkManager {
                     peer_info.connection_state = ConnectionState::Connected;
                     peer_info.device_info.is_online = true;
                     peer_info.last_seen = Utc::now();
+                    peer_info.connection_start_time = Some(Utc::now());
                     
-                    // Send connection success event
+                    // Update statistics
+                    peer_info.stats.successful_connections += 1;
+                    peer_info.stats.last_successful_connection = Some(Utc::now());
+                    peer_info.stats.last_activity = Utc::now();
+                    
+                    // Send events
                     let _ = self.event_sender.send(Event::Connected(peer_info.device_info.clone()));
+                    let _ = self.event_sender.send(Event::ConnectionAttemptSucceeded {
+                        device_id: device_id.clone(),
+                        connection_time,
+                    });
                 }
                 Err(e) => {
                     peer_info.connection_state = ConnectionState::Failed;
                     peer_info.connection_attempts += 1;
+                    peer_info.stats.failed_connections += 1;
+                    peer_info.stats.last_failed_connection = Some(Utc::now());
                     
-                    // Send connection failure event
+                    // Send events
                     let _ = self.event_sender.send(Event::Disconnected(device_id.clone()));
+                    let _ = self.event_sender.send(Event::ConnectionAttemptFailed {
+                        device_id: device_id.clone(),
+                        reason: e.to_string(),
+                        attempt_count: peer_info.connection_attempts,
+                    });
                     
                     return Err(e);
                 }
@@ -464,6 +491,9 @@ impl NetworkManager {
         *enabled = true;
         drop(enabled);
         
+        // Send discovery started event
+        let _ = self.event_sender.send(Event::NetworkDiscoveryStarted);
+        
         // Start discovery background task
         let discovery_interval = self.discovery_interval;
         let discovered_peers = self.discovered_peers.clone();
@@ -489,6 +519,10 @@ impl NetworkManager {
     pub async fn stop_discovery(&mut self) -> Result<()> {
         let mut enabled = self.discovery_enabled.lock().await;
         *enabled = false;
+        
+        // Send discovery stopped event
+        let _ = self.event_sender.send(Event::NetworkDiscoveryStopped);
+        
         Ok(())
     }
 
@@ -527,8 +561,12 @@ impl NetworkManager {
             discovered.insert(device_id.clone(), discovery_info.clone());
             drop(discovered);
             
-            // Send discovery event
-            let _ = event_sender.send(Event::SyncProgress { done: 1, total: 100 });
+            // Send peer discovered event
+            let _ = event_sender.send(Event::PeerDiscovered {
+                device_id: device_id.clone(),
+                addresses: discovery_info.addresses.clone(),
+                discovery_method: "mDNS".to_string(),
+            });
         }
     }
 
@@ -653,6 +691,9 @@ impl NetworkManager {
         *enabled = true;
         drop(enabled);
         
+        // Send peer management started event
+        let _ = self.event_sender.send(Event::PeerManagementStarted);
+        
         // Start health check background task
         let health_check_interval = self.health_check_interval;
         let connected_peers = self.connected_peers.clone();
@@ -674,21 +715,28 @@ impl NetworkManager {
     pub async fn stop_peer_management(&mut self) -> Result<()> {
         let mut enabled = self.peer_management_enabled.lock().await;
         *enabled = false;
+        
+        // Send peer management stopped event
+        let _ = self.event_sender.send(Event::PeerManagementStopped);
+        
         Ok(())
     }
 
     /// Perform health checks on all connected peers
     async fn perform_health_checks(
         connected_peers: &Arc<Mutex<HashMap<String, PeerInfo>>>,
-        _event_sender: &mpsc::UnboundedSender<Event>,
+        event_sender: &mpsc::UnboundedSender<Event>,
     ) {
         let mut peers = connected_peers.lock().await;
         let now = Utc::now();
         
-        for (_device_id, peer_info) in peers.iter_mut() {
+        for (device_id, peer_info) in peers.iter_mut() {
             if peer_info.connection_state == ConnectionState::Connected {
                 // Update last health check
                 peer_info.last_health_check = Some(now);
+                
+                // Store old health for comparison
+                let old_health = peer_info.health.clone();
                 
                 // Simple health check: if last activity was too long ago, mark as degraded
                 let time_since_activity = now.signed_duration_since(peer_info.stats.last_activity);
@@ -696,6 +744,15 @@ impl NetworkManager {
                     peer_info.health = PeerHealth::Degraded;
                 } else {
                     peer_info.health = PeerHealth::Healthy;
+                }
+                
+                // Send health changed event if health status changed
+                if old_health != peer_info.health {
+                    let _ = event_sender.send(Event::PeerHealthChanged {
+                        device_id: device_id.clone(),
+                        old_health: format!("{:?}", old_health),
+                        new_health: format!("{:?}", peer_info.health),
+                    });
                 }
                 
                 // Update last seen
@@ -719,12 +776,20 @@ impl NetworkManager {
             // Add to statistics history
             let mut history = self.peer_stats_history.lock().await;
             let history_entry = history.entry(device_id.to_string()).or_insert_with(VecDeque::new);
-            history_entry.push_back(stats);
+            history_entry.push_back(stats.clone());
             
             // Keep only last 100 entries
             if history_entry.len() > 100 {
                 history_entry.pop_front();
             }
+            
+            // Send statistics updated event
+            let _ = self.event_sender.send(Event::PeerStatsUpdated {
+                device_id: device_id.to_string(),
+                bytes_sent: stats.bytes_sent,
+                bytes_received: stats.bytes_received,
+                connection_attempts: stats.total_connection_attempts,
+            });
         }
         Ok(())
     }
@@ -754,18 +819,27 @@ impl NetworkManager {
     pub async fn update_peer_config(&mut self, device_id: &str, config: PeerConfig) -> Result<()> {
         let mut peers = self.connected_peers.lock().await;
         if let Some(peer_info) = peers.get_mut(device_id) {
+            let old_group = format!("{:?}", peer_info.config.group);
             peer_info.config = config.clone();
+            let new_group = format!("{:?}", config.group);
             
             // Update peer groups
             let mut groups = self.peer_groups.lock().await;
             
             // Remove from old group
-            for (group, peer_set) in groups.iter_mut() {
+            for (_group, peer_set) in groups.iter_mut() {
                 peer_set.remove(device_id);
             }
             
             // Add to new group
             groups.entry(config.group.clone()).or_insert_with(HashSet::new).insert(device_id.to_string());
+            
+            // Send group changed event
+            let _ = self.event_sender.send(Event::PeerGroupChanged {
+                device_id: device_id.to_string(),
+                old_group,
+                new_group,
+            });
         }
         Ok(())
     }
@@ -774,7 +848,13 @@ impl NetworkManager {
     pub async fn add_peer_tag(&mut self, device_id: &str, tag: String) -> Result<()> {
         let mut peers = self.connected_peers.lock().await;
         if let Some(peer_info) = peers.get_mut(device_id) {
-            peer_info.tags.insert(tag);
+            peer_info.tags.insert(tag.clone());
+            
+            // Send tag added event
+            let _ = self.event_sender.send(Event::PeerTagAdded {
+                device_id: device_id.to_string(),
+                tag,
+            });
         }
         Ok(())
     }
@@ -784,6 +864,12 @@ impl NetworkManager {
         let mut peers = self.connected_peers.lock().await;
         if let Some(peer_info) = peers.get_mut(device_id) {
             peer_info.tags.remove(tag);
+            
+            // Send tag removed event
+            let _ = self.event_sender.send(Event::PeerTagRemoved {
+                device_id: device_id.to_string(),
+                tag: tag.to_string(),
+            });
         }
         Ok(())
     }
@@ -859,6 +945,18 @@ impl NetworkManager {
     /// Set health check interval
     pub fn set_health_check_interval(&mut self, interval: Duration) {
         self.health_check_interval = interval;
+    }
+
+    /// Send network statistics update event
+    pub async fn send_network_stats_update(&self) -> Result<()> {
+        let summary = self.get_peer_management_summary().await;
+        let _ = self.event_sender.send(Event::NetworkStatsUpdated {
+            total_peers: summary.get("total_peers").copied().unwrap_or(0),
+            connected_peers: summary.get("connected_peers").copied().unwrap_or(0),
+            healthy_peers: summary.get("healthy_peers").copied().unwrap_or(0),
+            unhealthy_peers: summary.get("unhealthy_peers").copied().unwrap_or(0),
+        });
+        Ok(())
     }
 
     /// Check if a peer is authorized
@@ -1350,5 +1448,181 @@ mod tests {
         assert_eq!(summary.get("connected_peers").unwrap(), &1);
         assert_eq!(summary.get("healthy_peers").unwrap(), &1);
         assert_eq!(summary.get("unhealthy_peers").unwrap(), &0);
+    }
+
+    #[tokio::test]
+    async fn test_event_integration_network_listening() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Start listening
+        let addresses = vec!["/ip4/0.0.0.0/tcp/8080".to_string()];
+        let result = network_manager.start_listening(addresses.clone()).await;
+        assert!(result.is_ok());
+        
+        // Check that NetworkListeningStarted event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::NetworkListeningStarted { addresses: event_addresses } => {
+                assert_eq!(event_addresses, addresses);
+            }
+            _ => panic!("Expected NetworkListeningStarted event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_integration_connection_events() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "event-test-peer".to_string();
+        let addresses = vec!["/ip4/127.0.0.1/tcp/8080".to_string()];
+        let result = network_manager.connect_to_peer(device_id.clone(), addresses.clone()).await;
+        assert!(result.is_ok());
+        
+        // Check events were sent
+        let mut events_received = 0;
+        while let Some(event) = event_receiver.try_recv().ok() {
+            match event {
+                Event::ConnectionAttemptStarted { device_id: event_device_id, addresses: event_addresses } => {
+                    assert_eq!(event_device_id, device_id);
+                    assert_eq!(event_addresses, addresses);
+                    events_received += 1;
+                }
+                Event::ConnectionAttemptSucceeded { device_id: event_device_id, connection_time: _ } => {
+                    assert_eq!(event_device_id, device_id);
+                    events_received += 1;
+                }
+                Event::Connected(_) => {
+                    events_received += 1;
+                }
+                _ => {} // Ignore other events
+            }
+        }
+        
+        // Should have received at least 3 events
+        assert!(events_received >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_event_integration_discovery_events() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Start discovery
+        let result = network_manager.start_discovery().await;
+        assert!(result.is_ok());
+        
+        // Check that NetworkDiscoveryStarted event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::NetworkDiscoveryStarted => {
+                // Expected event
+            }
+            _ => panic!("Expected NetworkDiscoveryStarted event"),
+        }
+        
+        // Stop discovery
+        let result = network_manager.stop_discovery().await;
+        assert!(result.is_ok());
+        
+        // Check that NetworkDiscoveryStopped event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::NetworkDiscoveryStopped => {
+                // Expected event
+            }
+            _ => panic!("Expected NetworkDiscoveryStopped event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_integration_peer_management_events() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Start peer management
+        let result = network_manager.start_peer_management().await;
+        assert!(result.is_ok());
+        
+        // Check that PeerManagementStarted event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::PeerManagementStarted => {
+                // Expected event
+            }
+            _ => panic!("Expected PeerManagementStarted event"),
+        }
+        
+        // Stop peer management
+        let result = network_manager.stop_peer_management().await;
+        assert!(result.is_ok());
+        
+        // Check that PeerManagementStopped event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::PeerManagementStopped => {
+                // Expected event
+            }
+            _ => panic!("Expected PeerManagementStopped event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_integration_peer_tag_events() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "tag-event-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Clear any connection events
+        while event_receiver.try_recv().is_ok() {}
+        
+        // Add a tag
+        let result = network_manager.add_peer_tag(&device_id, "important".to_string()).await;
+        assert!(result.is_ok());
+        
+        // Check that PeerTagAdded event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::PeerTagAdded { device_id: event_device_id, tag } => {
+                assert_eq!(event_device_id, device_id);
+                assert_eq!(tag, "important");
+            }
+            _ => panic!("Expected PeerTagAdded event"),
+        }
+        
+        // Remove the tag
+        let result = network_manager.remove_peer_tag(&device_id, "important").await;
+        assert!(result.is_ok());
+        
+        // Check that PeerTagRemoved event was sent
+        let event = event_receiver.recv().await.unwrap();
+        match event {
+            Event::PeerTagRemoved { device_id: event_device_id, tag } => {
+                assert_eq!(event_device_id, device_id);
+                assert_eq!(tag, "important");
+            }
+            _ => panic!("Expected PeerTagRemoved event"),
+        }
     }
 }

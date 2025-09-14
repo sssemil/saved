@@ -124,6 +124,91 @@ pub enum Event {
     DeviceAuthorized(String),
     /// A device was revoked
     DeviceRevoked(String),
+    
+    // ===== NETWORK EVENTS =====
+    /// Network discovery found a new peer
+    PeerDiscovered {
+        device_id: String,
+        addresses: Vec<String>,
+        discovery_method: String,
+    },
+    /// Network discovery lost a peer
+    PeerLost {
+        device_id: String,
+        reason: String,
+    },
+    /// Peer health status changed
+    PeerHealthChanged {
+        device_id: String,
+        old_health: String,
+        new_health: String,
+    },
+    /// Peer statistics updated
+    PeerStatsUpdated {
+        device_id: String,
+        bytes_sent: u64,
+        bytes_received: u64,
+        connection_attempts: u32,
+    },
+    /// Peer group changed
+    PeerGroupChanged {
+        device_id: String,
+        old_group: String,
+        new_group: String,
+    },
+    /// Peer tag added
+    PeerTagAdded {
+        device_id: String,
+        tag: String,
+    },
+    /// Peer tag removed
+    PeerTagRemoved {
+        device_id: String,
+        tag: String,
+    },
+    /// Network listening started
+    NetworkListeningStarted {
+        addresses: Vec<String>,
+    },
+    /// Network listening stopped
+    NetworkListeningStopped,
+    /// Network discovery started
+    NetworkDiscoveryStarted,
+    /// Network discovery stopped
+    NetworkDiscoveryStopped,
+    /// Peer management started
+    PeerManagementStarted,
+    /// Peer management stopped
+    PeerManagementStopped,
+    /// Connection attempt started
+    ConnectionAttemptStarted {
+        device_id: String,
+        addresses: Vec<String>,
+    },
+    /// Connection attempt succeeded
+    ConnectionAttemptSucceeded {
+        device_id: String,
+        connection_time: std::time::Duration,
+    },
+    /// Connection attempt failed
+    ConnectionAttemptFailed {
+        device_id: String,
+        reason: String,
+        attempt_count: u32,
+    },
+    /// Network error occurred
+    NetworkError {
+        error_type: String,
+        message: String,
+        device_id: Option<String>,
+    },
+    /// Network statistics updated
+    NetworkStatsUpdated {
+        total_peers: u32,
+        connected_peers: u32,
+        healthy_peers: u32,
+        unhealthy_peers: u32,
+    },
 }
 
 /// QR code payload for device linking

@@ -108,6 +108,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::DeviceRevoked(device_id) => {
                 println!("Device revoked: {}", device_id);
             }
+            // Handle all network events with a wildcard pattern
+            _ => {
+                // For the example, we'll just ignore network events
+                // In a real application, you'd handle them appropriately
+            }
         }
     }
 
