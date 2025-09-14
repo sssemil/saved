@@ -105,7 +105,32 @@ pub async fn import_command(account_path: &PathBuf, input: &PathBuf, verbose: bo
                 if verbose {
                     println!("Importing message {}: {}", i + 1, message);
                 }
-                // TODO: Implement actual message import when storage is ready
+                // Import message using the core library
+                if let Some(body) = message.get("body").and_then(|v| v.as_str()) {
+                    // Create account handle for import
+                    let config = saved_core_rs::types::Config {
+                        storage_path: std::path::PathBuf::from("./saved-account"),
+                        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+                        network_port: 0,
+                        enable_mdns: false,
+                        allow_public_relays: false,
+                        bootstrap_multiaddrs: Vec::new(),
+                        use_kademlia: false,
+                        chunk_size: 1024,
+                        max_parallel_chunks: 4,
+                        account_passphrase: None,
+                    };
+                    
+                    let mut account = saved_core_rs::types::AccountHandle::create_or_open(config).await
+                        .map_err(|e| format!("Failed to create account: {}", e))?;
+                    
+                    account.create_message(body.to_string(), Vec::new()).await
+                        .map_err(|e| format!("Failed to import message {}: {}", i + 1, e))?;
+                    
+                    if verbose {
+                        println!("  ✓ Imported: {}", body);
+                    }
+                }
             }
         }
     }

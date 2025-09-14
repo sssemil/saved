@@ -575,12 +575,19 @@ impl NetworkManager {
                     if cid.len() == 32 {
                         let mut chunk_id = [0u8; 32];
                         chunk_id.copy_from_slice(&cid);
-                        // TODO: Get chunk from storage
-                        // For now, return empty chunk
-                        chunks.push(fetch_chunks_resp::Chunk {
-                            cid: cid.clone(),
-                            data: Vec::new(),
-                        });
+                        // Get chunk from storage
+                        if let Some(chunk_data) = self.storage.get_chunk(&chunk_id).await? {
+                            chunks.push(fetch_chunks_resp::Chunk {
+                                cid: cid.clone(),
+                                data: chunk_data,
+                            });
+                        } else {
+                            // Chunk not found, return empty chunk
+                            chunks.push(fetch_chunks_resp::Chunk {
+                                cid: cid.clone(),
+                                data: Vec::new(),
+                            });
+                        }
                     }
                 }
                 
@@ -603,9 +610,8 @@ impl NetworkManager {
                     if chunk.cid.len() == 32 {
                         let mut chunk_id = [0u8; 32];
                         chunk_id.copy_from_slice(&chunk.cid);
-                        // TODO: Store chunk in storage
-                        // For now, just log that we received it
-                        println!("Received chunk: {:?}", chunk_id);
+                        // Store chunk in storage
+                        self.storage.store_chunk(&chunk_id, &chunk.data).await?;
                     }
                 }
             }
@@ -640,26 +646,51 @@ impl NetworkManager {
 
     /// Check if a peer is authorized for this account
     async fn is_peer_authorized(&self, peer_id: &PeerId) -> Result<bool> {
-        // TODO: Implement proper peer authorization check
-        // For now, default to unauthorized for security
-        Ok(false)
+        // Convert peer ID to device ID format
+        let peer_bytes = peer_id.to_bytes();
+        let device_id = format!("peer_{:02x}{:02x}{:02x}{:02x}", 
+            peer_bytes[0], peer_bytes[1], peer_bytes[2], peer_bytes[3]);
+        
+        // Check if this peer is in the authorized devices list
+        self.storage.is_device_authorized(&device_id).await
     }
 
     /// Encrypt operation for transmission to authorized peer
     async fn encrypt_operation_for_transmission(&self, op: &Op) -> Result<OpEnvelope> {
-        // TODO: Implement operation encryption
-        // For now, return empty envelope
+        // Serialize the operation
+        let op_bytes = bincode::serialize(op)
+            .map_err(|e| Error::Crypto(format!("Failed to serialize operation: {}", e)))?;
+        
+        // TODO: Implement proper encryption with peer-specific key
+        // For now, return the operation as plaintext (insecure)
+        // In a real implementation, this would:
+        // 1. Derive a shared key with the target peer
+        // 2. Encrypt the operation with that key
+        // 3. Create a proper header with signature
+        
         Ok(OpEnvelope {
-            header: None,
-            ciphertext: Vec::new(),
+            header: None, // TODO: Create proper header with signature
+            ciphertext: op_bytes, // TODO: Encrypt with peer-specific key
         })
     }
 
     /// Decrypt and verify operation from peer
     async fn decrypt_and_verify_operation(&self, envelope: &OpEnvelope) -> Result<Option<Op>> {
-        // TODO: Implement operation decryption and verification
-        // For now, return None
-        Ok(None)
+        // TODO: Implement proper decryption and verification
+        // For now, deserialize the operation directly (insecure)
+        // In a real implementation, this would:
+        // 1. Verify the header signature
+        // 2. Decrypt the ciphertext with the peer's key
+        // 3. Verify the operation integrity
+        
+        if envelope.ciphertext.is_empty() {
+            return Ok(None);
+        }
+        
+        let op: Op = bincode::deserialize(&envelope.ciphertext)
+            .map_err(|e| Error::Crypto(format!("Failed to deserialize operation: {}", e)))?;
+        
+        Ok(Some(op))
     }
 }
 

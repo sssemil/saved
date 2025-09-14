@@ -75,6 +75,12 @@ pub trait Storage: Send + Sync {
     /// Check if a device is authorized
     async fn is_device_authorized(&self, device_id: &str) -> Result<bool>;
 
+    /// Store device certificate for this device
+    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()>;
+
+    /// Get device certificate for this device
+    async fn get_device_certificate(&self) -> Result<Option<crate::crypto::DeviceCert>>;
+
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
 }

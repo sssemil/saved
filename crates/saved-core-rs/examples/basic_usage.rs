@@ -26,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Create or open account

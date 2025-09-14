@@ -26,6 +26,7 @@
 //!         chunk_size: 2 * 1024 * 1024,
 //!         max_parallel_chunks: 4,
 //!         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+//!         account_passphrase: None,
 //!     };
 //!     
 //!     let mut account = AccountHandle::create_or_open(config).await?;
@@ -78,6 +79,7 @@ mod tests {
             chunk_size: 2 * 1024 * 1024,
             max_parallel_chunks: 4,
             storage_backend: crate::storage::StorageBackend::Memory, // Use in-memory storage for tests
+            account_passphrase: None,
         };
 
         let account = AccountHandle::create_or_open(config).await?;
@@ -339,6 +341,7 @@ mod tests {
             use_kademlia: false,
             chunk_size: 1024,
             max_parallel_chunks: 4,
+            account_passphrase: None,
         };
         let config_phone = crate::types::Config {
             storage_path: std::path::PathBuf::from("test_phone"),
@@ -350,6 +353,7 @@ mod tests {
             use_kademlia: false,
             chunk_size: 1024,
             max_parallel_chunks: 4,
+            account_passphrase: None,
         };
 
         // Create laptop as account key holder

@@ -158,6 +158,16 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Device certificate table (for this device)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS device_certificate (
+                id INTEGER PRIMARY KEY,
+                device_cert BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -617,10 +627,40 @@ impl Storage for SqliteStorage {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare("SELECT 1 FROM authorized_devices WHERE device_id = ?")?;
         let result = stmt.query_row(params![device_id], |_| Ok(true));
-
+        
         match result {
             Ok(_) => Ok(true),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let created_at = chrono::Utc::now().timestamp();
+        let cert_bytes = bincode::serialize(device_cert)
+            .map_err(|e| crate::error::Error::Crypto(format!("Failed to serialize device cert: {}", e)))?;
+        
+        db.execute(
+            "INSERT OR REPLACE INTO device_certificate (id, device_cert, created_at) VALUES (1, ?, ?)",
+            params![cert_bytes, created_at],
+        )?;
+        Ok(())
+    }
+
+    async fn get_device_certificate(&self) -> Result<Option<crate::crypto::DeviceCert>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT device_cert FROM device_certificate WHERE id = 1")?;
+        let result = stmt.query_row([], |row| {
+            let cert_bytes: Vec<u8> = row.get(0)?;
+            let device_cert: crate::crypto::DeviceCert = bincode::deserialize(&cert_bytes)
+                .map_err(|e| rusqlite::Error::InvalidColumnType(0, "device_cert".to_string(), rusqlite::types::Type::Blob))?;
+            Ok(device_cert)
+        });
+        
+        match result {
+            Ok(cert) => Ok(Some(cert)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }

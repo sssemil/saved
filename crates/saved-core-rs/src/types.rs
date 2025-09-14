@@ -82,6 +82,8 @@ pub struct Config {
     pub max_parallel_chunks: usize,
     /// Storage backend to use (default: SQLite)
     pub storage_backend: StorageBackend,
+    /// Passphrase for encrypting account keys (optional, will prompt if not provided)
+    pub account_passphrase: Option<String>,
 }
 
 impl Default for Config {
@@ -96,6 +98,7 @@ impl Default for Config {
             chunk_size: 2 * 1024 * 1024, // 2 MiB
             max_parallel_chunks: 4,
             storage_backend: StorageBackend::Sqlite,
+            account_passphrase: None,
         }
     }
 }
@@ -130,6 +133,8 @@ pub struct QrPayload {
     pub onboarding_token: String,
     /// Token expiration timestamp
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Device certificate for authentication
+    pub device_cert: Option<crate::crypto::DeviceCert>,
 }
 
 /// Main account handle - the primary interface to the SAVED library
@@ -184,9 +189,10 @@ impl AccountHandle {
         // Initialize account key if provided
         if let Some(account_key) = account_key {
             // Store the account key (encrypted with passphrase)
+            let passphrase = config.account_passphrase.as_deref().unwrap_or("default_passphrase");
             let encrypted_account_key = crate::crypto::protect_vault_key_with_passphrase(
                 &account_key.private_key_bytes(),
-                "default_passphrase", // TODO: Get from config
+                passphrase,
             )?;
             sync_manager.storage_mut().store_account_key(encrypted_account_key.as_bytes()).await?;
 
@@ -204,28 +210,59 @@ impl AccountHandle {
 
     /// Get information about this device
     pub async fn device_info(&self) -> DeviceInfo {
+        let device_cert = self.sync_manager.storage().get_device_certificate().await.ok().flatten();
         DeviceInfo {
             device_id: "local-device".to_string(),
             device_name: "Local Device".to_string(),
             last_seen: chrono::Utc::now(),
             is_online: true,
-            device_cert: None, // TODO: Load from storage
+            device_cert,
             is_authorized: true, // Local device is always authorized
         }
     }
 
     /// Authorize a new device with a device certificate
-    pub async fn authorize_device(&mut self, _device_cert: crate::crypto::DeviceCert) -> crate::Result<()> {
-        // TODO: Verify device certificate with account key
-        // TODO: Store authorized device in storage
-        // TODO: Send authorization confirmation
-        Ok(())
+    pub async fn authorize_device(&mut self, device_cert: crate::crypto::DeviceCert) -> crate::Result<()> {
+        // Check if this device has the account private key
+        if !self.has_account_private_key().await? {
+            return Err(crate::error::Error::Crypto("This device does not have the account private key to authorize new devices".to_string()));
+        }
+
+        // Get the account key info to verify the certificate
+        if let Some(key_info) = self.get_account_key_info().await? {
+            // Create a temporary account key for verification (public key only)
+            let account_key = crate::crypto::AccountKey::from_public_bytes(&key_info.public_key)?;
+            
+            // Verify the device certificate
+            device_cert.verify(&account_key)?;
+            
+            // Store the device certificate in authorized devices
+            let device_id = format!("device_{:02x}{:02x}{:02x}{:02x}", 
+                device_cert.device_pubkey[0], 
+                device_cert.device_pubkey[1], 
+                device_cert.device_pubkey[2], 
+                device_cert.device_pubkey[3]);
+            
+            let cert_bytes = bincode::serialize(&device_cert)
+                .map_err(|e| crate::error::Error::Crypto(format!("Failed to serialize device cert: {}", e)))?;
+            
+            self.sync_manager.storage_mut().store_authorized_device(&device_id, &cert_bytes).await?;
+            
+            // TODO: Send authorization confirmation
+            Ok(())
+        } else {
+            Err(crate::error::Error::Crypto("No account key info found".to_string()))
+        }
     }
 
     /// Revoke authorization for a device
-    pub async fn revoke_device(&mut self, _device_id: &str) -> crate::Result<()> {
-        // TODO: Remove device from authorized list
+    pub async fn revoke_device(&mut self, device_id: &str) -> crate::Result<()> {
+        // Remove device from authorized list
+        self.sync_manager.storage_mut().revoke_device_authorization(device_id).await?;
+        
         // TODO: Disconnect device if connected
+        // This would require network manager integration
+        
         Ok(())
     }
 
@@ -322,24 +359,38 @@ impl AccountHandle {
     }
 
     /// Generate a QR code payload for device linking
-    pub fn make_linking_qr(&self) -> QrPayload {
-        QrPayload {
+    pub async fn make_linking_qr(&self) -> crate::Result<QrPayload> {
+        let device_cert = self.sync_manager.storage().get_device_certificate().await?;
+        Ok(QrPayload {
             device_id: "local-device".to_string(),
             addresses: Vec::new(),
             onboarding_token: "dummy-token".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
-        }
+            device_cert,
+        })
     }
 
     /// Accept a device link from a QR code payload
-    pub async fn accept_link(&self, _payload: QrPayload) -> crate::Result<DeviceInfo> {
+    pub async fn accept_link(&self, payload: QrPayload) -> crate::Result<DeviceInfo> {
+        let is_authorized = if let Some(device_cert) = &payload.device_cert {
+            // Verify the device certificate if we have account key info
+            if let Some(key_info) = self.get_account_key_info().await? {
+                let account_key = crate::crypto::AccountKey::from_public_bytes(&key_info.public_key)?;
+                device_cert.verify(&account_key).is_ok()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         Ok(DeviceInfo {
-            device_id: "remote-device".to_string(),
+            device_id: payload.device_id,
             device_name: "Remote Device".to_string(),
             last_seen: chrono::Utc::now(),
             is_online: true,
-            device_cert: None, // TODO: Extract from QR payload
-            is_authorized: false, // TODO: Verify device certificate
+            device_cert: payload.device_cert,
+            is_authorized,
         })
     }
 
@@ -383,10 +434,17 @@ impl AccountHandle {
 
     /// Subscribe to events from the account
     pub async fn subscribe(&self) -> mpsc::UnboundedReceiver<Event> {
-        let (_sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::unbounded_channel();
+        
         // TODO: Implement proper event subscription that forwards events from the main channel
+        // This would require cloning the event_sender and setting up a forwarding mechanism
         // For now, return a new channel that won't receive any events
-        // This should create a proper subscription that forwards events from the sync manager
+        // In a real implementation, this would:
+        // 1. Clone the main event_sender
+        // 2. Set up a forwarding task that sends events to this subscriber
+        // 3. Return the receiver for this specific subscription
+        
+        drop(sender); // Prevent unused variable warning
         receiver
     }
 

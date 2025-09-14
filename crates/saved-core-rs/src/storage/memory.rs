@@ -18,6 +18,7 @@ pub struct MemoryStorage {
     shared_account_key: Arc<RwLock<Option<Vec<u8>>>>,
     vault_key: Arc<RwLock<Option<Vec<u8>>>>,
     authorized_devices: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    device_certificate: Arc<RwLock<Option<crate::crypto::DeviceCert>>>,
 }
 
 impl MemoryStorage {
@@ -31,6 +32,7 @@ impl MemoryStorage {
             shared_account_key: Arc::new(RwLock::new(None)),
             vault_key: Arc::new(RwLock::new(None)),
             authorized_devices: Arc::new(RwLock::new(HashMap::new())),
+            device_certificate: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -178,6 +180,17 @@ impl Storage for MemoryStorage {
     async fn is_device_authorized(&self, device_id: &str) -> Result<bool> {
         let devices = self.authorized_devices.read().await;
         Ok(devices.contains_key(device_id))
+    }
+
+    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()> {
+        let mut cert = self.device_certificate.write().await;
+        *cert = Some(device_cert.clone());
+        Ok(())
+    }
+
+    async fn get_device_certificate(&self) -> Result<Option<crate::crypto::DeviceCert>> {
+        let cert = self.device_certificate.read().await;
+        Ok(cert.clone())
     }
 
     async fn get_stats(&self) -> Result<StorageStats> {
