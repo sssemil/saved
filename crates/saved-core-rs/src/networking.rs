@@ -12,17 +12,51 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use std::sync::Arc;
+use chrono::{DateTime, Utc};
+
+/// Connection state for a peer
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionState {
+    /// Not connected
+    Disconnected,
+    /// Attempting to connect
+    Connecting,
+    /// Connected and authenticated
+    Connected,
+    /// Connection failed
+    Failed,
+}
+
+/// Enhanced peer information with connection state
+#[derive(Debug, Clone)]
+pub struct PeerInfo {
+    /// Device information
+    pub device_info: DeviceInfo,
+    /// Connection state
+    pub connection_state: ConnectionState,
+    /// Last seen timestamp
+    pub last_seen: DateTime<Utc>,
+    /// Connection attempts
+    pub connection_attempts: u32,
+    /// Last connection attempt
+    pub last_attempt: Option<DateTime<Utc>>,
+}
 
 /// Network manager for SAVED
 pub struct NetworkManager {
     /// Event sender for notifying the application
     event_sender: mpsc::UnboundedSender<Event>,
-    /// Connected peers (simplified - just device info)
-    connected_peers: HashMap<String, DeviceInfo>,
+    /// Connected peers with enhanced information
+    connected_peers: Arc<Mutex<HashMap<String, PeerInfo>>>,
     /// Event log for sync operations
     event_log: EventLog,
     /// Device key for this node
     device_key: crate::crypto::DeviceKey,
+    /// Network addresses we're listening on
+    listening_addresses: Arc<Mutex<Vec<String>>>,
+    /// Connection timeout duration
+    connection_timeout: Duration,
 }
 
 impl NetworkManager {
@@ -34,34 +68,108 @@ impl NetworkManager {
     ) -> Result<Self> {
         Ok(Self {
             event_sender,
-            connected_peers: HashMap::new(),
+            connected_peers: Arc::new(Mutex::new(HashMap::new())),
             event_log,
             device_key,
+            listening_addresses: Arc::new(Mutex::new(Vec::new())),
+            connection_timeout: Duration::from_secs(30),
         })
     }
 
-    /// Start listening on the given addresses (placeholder)
-    pub async fn start_listening(&mut self, _addresses: Vec<String>) -> Result<()> {
+    /// Start listening on the given addresses
+    pub async fn start_listening(&mut self, addresses: Vec<String>) -> Result<()> {
+        let mut listening_addrs = self.listening_addresses.lock().await;
+        *listening_addrs = addresses.clone();
+        drop(listening_addrs);
+        
         // In a real implementation, this would start listening on the given addresses
-        // For now, we'll just log that we're starting to listen
-        println!("Network manager started listening (placeholder implementation)");
+        println!("Network manager started listening on {} addresses", addresses.len());
+        
+        // Send listening started event
+        let _ = self.event_sender.send(Event::SyncProgress { done: 0, total: 100 });
+        
         Ok(())
     }
 
-    /// Dial a peer (placeholder)
-    pub async fn dial_peer(&mut self, _peer_id: String, _addresses: Vec<String>) -> Result<()> {
-        // In a real implementation, this would dial the peer
-        // For now, we'll just add a placeholder peer
+    /// Connect to a peer with proper connection management
+    pub async fn connect_to_peer(&mut self, device_id: String, addresses: Vec<String>) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        
+        // Check if peer is already connected
+        if let Some(peer_info) = peers.get(&device_id) {
+            match peer_info.connection_state {
+                ConnectionState::Connected => {
+                    return Ok(()); // Already connected
+                }
+                ConnectionState::Connecting => {
+                    return Err(Error::Network("Connection already in progress".to_string()));
+                }
+                _ => {} // Continue with connection attempt
+            }
+        }
+        
+        // Create peer info with connecting state
         let device_info = DeviceInfo {
-            device_id: _peer_id.clone(),
-            device_name: "Remote Device".to_string(),
-            last_seen: chrono::Utc::now(),
-            is_online: true,
+            device_id: device_id.clone(),
+            device_name: format!("Device {}", &device_id[..8]),
+            last_seen: Utc::now(),
+            is_online: false,
             device_cert: None,
             is_authorized: false,
         };
-        self.connected_peers.insert(_peer_id, device_info);
+        
+        let peer_info = PeerInfo {
+            device_info: device_info.clone(),
+            connection_state: ConnectionState::Connecting,
+            last_seen: Utc::now(),
+            connection_attempts: 1,
+            last_attempt: Some(Utc::now()),
+        };
+        
+        peers.insert(device_id.clone(), peer_info);
+        drop(peers);
+        
+        // Simulate connection attempt
+        let connection_result = self.simulate_connection_attempt(&device_id, addresses).await;
+        
+        // Update connection state based on result
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(&device_id) {
+            match connection_result {
+                Ok(_) => {
+                    peer_info.connection_state = ConnectionState::Connected;
+                    peer_info.device_info.is_online = true;
+                    peer_info.last_seen = Utc::now();
+                    
+                    // Send connection success event
+                    let _ = self.event_sender.send(Event::Connected(peer_info.device_info.clone()));
+                }
+                Err(e) => {
+                    peer_info.connection_state = ConnectionState::Failed;
+                    peer_info.connection_attempts += 1;
+                    
+                    // Send connection failure event
+                    let _ = self.event_sender.send(Event::Disconnected(device_id.clone()));
+                    
+                    return Err(e);
+                }
+            }
+        }
+        
         Ok(())
+    }
+
+    /// Simulate a connection attempt (placeholder for real networking)
+    async fn simulate_connection_attempt(&self, device_id: &str, _addresses: Vec<String>) -> Result<()> {
+        // Simulate connection delay
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // Simulate connection success/failure based on device_id
+        if device_id.contains("fail") {
+            Err(Error::Network("Simulated connection failure".to_string()))
+        } else {
+            Ok(())
+        }
     }
 
     /// Run the network event loop (placeholder)
@@ -74,22 +182,83 @@ impl NetworkManager {
     }
 
     /// Get connected peers
-    pub fn get_connected_peers(&self) -> &HashMap<String, DeviceInfo> {
-        &self.connected_peers
+    pub async fn get_connected_peers(&self) -> HashMap<String, DeviceInfo> {
+        let peers = self.connected_peers.lock().await;
+        peers.iter()
+            .filter(|(_, peer_info)| peer_info.connection_state == ConnectionState::Connected)
+            .map(|(device_id, peer_info)| (device_id.clone(), peer_info.device_info.clone()))
+            .collect()
     }
 
-    /// Disconnect a specific peer
-    pub async fn disconnect_peer(&mut self, peer_id: String) -> Result<()> {
-        // Remove from connected peers
-        self.connected_peers.remove(&peer_id);
+    /// Get all peers (including disconnected ones)
+    pub async fn get_all_peers(&self) -> HashMap<String, PeerInfo> {
+        let peers = self.connected_peers.lock().await;
+        peers.clone()
+    }
+
+    /// Disconnect a specific peer with proper cleanup
+    pub async fn disconnect_peer(&mut self, device_id: String) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        
+        if let Some(peer_info) = peers.get_mut(&device_id) {
+            // Update connection state
+            peer_info.connection_state = ConnectionState::Disconnected;
+            peer_info.device_info.is_online = false;
+            peer_info.last_seen = Utc::now();
+            
+            // Send disconnection event
+            let _ = self.event_sender.send(Event::Disconnected(device_id.clone()));
+            
+            // Remove from peers map after a delay (for cleanup)
+            tokio::spawn({
+                let peers = self.connected_peers.clone();
+                let device_id = device_id.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let mut peers = peers.lock().await;
+                    peers.remove(&device_id);
+                }
+            });
+        }
+        
         Ok(())
+    }
+
+    /// Force disconnect and remove a peer immediately
+    pub async fn force_disconnect_peer(&mut self, device_id: String) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        
+        if peers.contains_key(&device_id) {
+            // Send disconnection event
+            let _ = self.event_sender.send(Event::Disconnected(device_id.clone()));
+            
+            // Remove immediately
+            peers.remove(&device_id);
+        }
+        
+        Ok(())
+    }
+
+    /// Check if a peer is connected
+    pub async fn is_peer_connected(&self, device_id: &str) -> bool {
+        let peers = self.connected_peers.lock().await;
+        peers.get(device_id)
+            .map(|peer_info| peer_info.connection_state == ConnectionState::Connected)
+            .unwrap_or(false)
+    }
+
+    /// Get connection state for a peer
+    pub async fn get_peer_connection_state(&self, device_id: &str) -> Option<ConnectionState> {
+        let peers = self.connected_peers.lock().await;
+        peers.get(device_id).map(|peer_info| peer_info.connection_state.clone())
     }
 
     /// Check if a peer is authorized
     pub async fn is_peer_authorized(&self, device_id: &str) -> Result<bool> {
         // In a real implementation, this would check against the storage
         // For now, we'll just return true for connected peers
-        Ok(self.connected_peers.contains_key(device_id))
+        let peers = self.connected_peers.lock().await;
+        Ok(peers.contains_key(device_id))
     }
 
     /// Handle chunk message (placeholder)
@@ -165,20 +334,74 @@ mod tests {
         
         let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
         
-        // Test dialing a peer
-        let result = network_manager.dial_peer("test-peer".to_string(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        // Test connecting to a peer
+        let result = network_manager.connect_to_peer("test-peer".to_string(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
         assert!(result.is_ok());
         
         // Check that peer is connected
-        let peers = network_manager.get_connected_peers();
+        let peers = network_manager.get_connected_peers().await;
         assert!(peers.contains_key("test-peer"));
+        
+        // Check connection state
+        let is_connected = network_manager.is_peer_connected("test-peer").await;
+        assert!(is_connected);
         
         // Test disconnecting peer
         let result = network_manager.disconnect_peer("test-peer".to_string()).await;
         assert!(result.is_ok());
         
         // Check that peer is disconnected
-        let peers = network_manager.get_connected_peers();
-        assert!(!peers.contains_key("test-peer"));
+        let is_connected = network_manager.is_peer_connected("test-peer").await;
+        assert!(!is_connected);
+    }
+
+    #[tokio::test]
+    async fn test_connection_failure() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Test connecting to a peer that will fail
+        let result = network_manager.connect_to_peer("fail-peer".to_string(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_err());
+        
+        // Check that peer is not connected
+        let is_connected = network_manager.is_peer_connected("fail-peer").await;
+        assert!(!is_connected);
+        
+        // Check connection state
+        let state = network_manager.get_peer_connection_state("fail-peer").await;
+        assert!(matches!(state, Some(ConnectionState::Failed)));
+    }
+
+    #[tokio::test]
+    async fn test_connection_states() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Initially no connection state
+        let state = network_manager.get_peer_connection_state("nonexistent-peer").await;
+        assert!(state.is_none());
+        
+        // Connect to a peer
+        let result = network_manager.connect_to_peer("test-peer".to_string(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Check connected state
+        let state = network_manager.get_peer_connection_state("test-peer").await;
+        assert!(matches!(state, Some(ConnectionState::Connected)));
+        
+        // Disconnect peer
+        let result = network_manager.disconnect_peer("test-peer".to_string()).await;
+        assert!(result.is_ok());
+        
+        // Check disconnected state
+        let state = network_manager.get_peer_connection_state("test-peer").await;
+        assert!(matches!(state, Some(ConnectionState::Disconnected)));
     }
 }

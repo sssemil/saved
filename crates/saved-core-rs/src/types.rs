@@ -278,7 +278,7 @@ impl AccountHandle {
         // Disconnect device if connected via network manager
         if let Some(ref mut network_manager) = self.network_manager {
             // Disconnect the device by device_id
-            network_manager.disconnect_peer(device_id.to_string()).await?;
+            network_manager.force_disconnect_peer(device_id.to_string()).await?;
         }
         
         Ok(())
