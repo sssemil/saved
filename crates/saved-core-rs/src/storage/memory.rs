@@ -13,6 +13,8 @@ pub struct MemoryStorage {
     operations: Arc<RwLock<Vec<Op>>>,
     messages: Arc<RwLock<HashMap<MessageId, Message>>>,
     chunks: Arc<RwLock<HashMap<[u8; 32], Vec<u8>>>>,
+    account_key: Arc<RwLock<Option<Vec<u8>>>>,
+    vault_key: Arc<RwLock<Option<Vec<u8>>>>,
 }
 
 impl MemoryStorage {
@@ -21,6 +23,8 @@ impl MemoryStorage {
             operations: Arc::new(RwLock::new(Vec::new())),
             messages: Arc::new(RwLock::new(HashMap::new())),
             chunks: Arc::new(RwLock::new(HashMap::new())),
+            account_key: Arc::new(RwLock::new(None)),
+            vault_key: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -101,6 +105,28 @@ impl Storage for MemoryStorage {
         Ok(())
     }
 
+    async fn store_account_key(&self, encrypted_account_key: &[u8]) -> Result<()> {
+        let mut account_key = self.account_key.write().await;
+        *account_key = Some(encrypted_account_key.to_vec());
+        Ok(())
+    }
+
+    async fn get_account_key(&self) -> Result<Option<Vec<u8>>> {
+        let account_key = self.account_key.read().await;
+        Ok(account_key.clone())
+    }
+
+    async fn store_vault_key(&self, encrypted_vault_key: &[u8]) -> Result<()> {
+        let mut vault_key = self.vault_key.write().await;
+        *vault_key = Some(encrypted_vault_key.to_vec());
+        Ok(())
+    }
+
+    async fn get_vault_key(&self) -> Result<Option<Vec<u8>>> {
+        let vault_key = self.vault_key.read().await;
+        Ok(vault_key.clone())
+    }
+
     async fn get_stats(&self) -> Result<StorageStats> {
         let ops = self.operations.read().await;
         let messages = self.messages.read().await;
@@ -114,5 +140,63 @@ impl Storage for MemoryStorage {
             chunk_count: chunks.len(),
             total_size,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_account_key_storage() {
+        let storage = MemoryStorage::new();
+        
+        // Initially no account key
+        assert!(storage.get_account_key().await.unwrap().is_none());
+        
+        // Store an encrypted account key
+        let encrypted_key = vec![1, 2, 3, 4, 5];
+        storage.store_account_key(&encrypted_key).await.unwrap();
+        
+        // Retrieve the account key
+        let retrieved = storage.get_account_key().await.unwrap();
+        assert_eq!(retrieved, Some(encrypted_key));
+    }
+
+    #[tokio::test]
+    async fn test_vault_key_storage() {
+        let storage = MemoryStorage::new();
+        
+        // Initially no vault key
+        assert!(storage.get_vault_key().await.unwrap().is_none());
+        
+        // Store an encrypted vault key
+        let encrypted_key = vec![6, 7, 8, 9, 10];
+        storage.store_vault_key(&encrypted_key).await.unwrap();
+        
+        // Retrieve the vault key
+        let retrieved = storage.get_vault_key().await.unwrap();
+        assert_eq!(retrieved, Some(encrypted_key));
+    }
+
+    #[tokio::test]
+    async fn test_key_overwrite() {
+        let storage = MemoryStorage::new();
+        
+        // Store initial keys
+        let key1 = vec![1, 2, 3];
+        let key2 = vec![4, 5, 6];
+        storage.store_account_key(&key1).await.unwrap();
+        storage.store_vault_key(&key2).await.unwrap();
+        
+        // Overwrite with new keys
+        let key3 = vec![7, 8, 9];
+        let key4 = vec![10, 11, 12];
+        storage.store_account_key(&key3).await.unwrap();
+        storage.store_vault_key(&key4).await.unwrap();
+        
+        // Verify overwrite
+        assert_eq!(storage.get_account_key().await.unwrap(), Some(key3));
+        assert_eq!(storage.get_vault_key().await.unwrap(), Some(key4));
     }
 }

@@ -107,6 +107,24 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Account keys table (encrypted with passphrase)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS account_keys (
+                id INTEGER PRIMARY KEY,
+                encrypted_key BLOB NOT NULL
+            )",
+            [],
+        )?;
+
+        // Vault keys table (encrypted with passphrase)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS vault_keys (
+                id INTEGER PRIMARY KEY,
+                encrypted_key BLOB NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -410,6 +428,54 @@ impl Storage for SqliteStorage {
             params![message_id.0.as_slice()],
         )?;
         Ok(())
+    }
+
+    async fn store_account_key(&self, encrypted_account_key: &[u8]) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO account_keys (id, encrypted_key) VALUES (1, ?)",
+            params![encrypted_account_key],
+        )?;
+        Ok(())
+    }
+
+    async fn get_account_key(&self) -> Result<Option<Vec<u8>>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT encrypted_key FROM account_keys WHERE id = 1")?;
+        let result = stmt.query_row([], |row| {
+            let encrypted_key: Vec<u8> = row.get(0)?;
+            Ok(encrypted_key)
+        });
+        
+        match result {
+            Ok(key) => Ok(Some(key)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn store_vault_key(&self, encrypted_vault_key: &[u8]) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO vault_keys (id, encrypted_key) VALUES (1, ?)",
+            params![encrypted_vault_key],
+        )?;
+        Ok(())
+    }
+
+    async fn get_vault_key(&self) -> Result<Option<Vec<u8>>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT encrypted_key FROM vault_keys WHERE id = 1")?;
+        let result = stmt.query_row([], |row| {
+            let encrypted_key: Vec<u8> = row.get(0)?;
+            Ok(encrypted_key)
+        });
+        
+        match result {
+            Ok(key) => Ok(Some(key)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn get_stats(&self) -> Result<StorageStats> {

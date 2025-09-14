@@ -39,6 +39,18 @@ pub trait Storage: Send + Sync {
     /// Delete a message
     async fn delete_message(&self, message_id: &MessageId) -> Result<()>;
 
+    /// Store the account key (encrypted with passphrase)
+    async fn store_account_key(&self, encrypted_account_key: &[u8]) -> Result<()>;
+
+    /// Retrieve the encrypted account key
+    async fn get_account_key(&self) -> Result<Option<Vec<u8>>>;
+
+    /// Store the vault key (encrypted with passphrase)
+    async fn store_vault_key(&self, encrypted_vault_key: &[u8]) -> Result<()>;
+
+    /// Retrieve the encrypted vault key
+    async fn get_vault_key(&self) -> Result<Option<Vec<u8>>>;
+
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
 }
