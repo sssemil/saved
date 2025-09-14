@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::events::{Op, OpHash, EventLog};
 use crate::protobuf::*;
 use crate::types::{Event, DeviceInfo};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::sync::mpsc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -61,6 +61,82 @@ pub enum DiscoveryMethod {
     Relay,
 }
 
+/// Peer health status
+#[derive(Debug, Clone, PartialEq)]
+pub enum PeerHealth {
+    /// Healthy and responsive
+    Healthy,
+    /// Experiencing issues but still connected
+    Degraded,
+    /// Unresponsive or frequently disconnecting
+    Unhealthy,
+    /// Unknown health status
+    Unknown,
+}
+
+/// Peer statistics for monitoring
+#[derive(Debug, Clone)]
+pub struct PeerStats {
+    /// Total connection attempts
+    pub total_connection_attempts: u32,
+    /// Successful connections
+    pub successful_connections: u32,
+    /// Failed connections
+    pub failed_connections: u32,
+    /// Total bytes sent
+    pub bytes_sent: u64,
+    /// Total bytes received
+    pub bytes_received: u64,
+    /// Last successful connection
+    pub last_successful_connection: Option<DateTime<Utc>>,
+    /// Last failed connection
+    pub last_failed_connection: Option<DateTime<Utc>>,
+    /// Average connection duration
+    pub avg_connection_duration: Duration,
+    /// Total connection time
+    pub total_connection_time: Duration,
+    /// Number of disconnections
+    pub disconnection_count: u32,
+    /// Last activity timestamp
+    pub last_activity: DateTime<Utc>,
+}
+
+/// Peer group for organizing peers
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PeerGroup {
+    /// Local network peers
+    Local,
+    /// Internet peers
+    Internet,
+    /// Relay peers
+    Relay,
+    /// Trusted peers
+    Trusted,
+    /// Blocked peers
+    Blocked,
+    /// Custom group
+    Custom(String),
+}
+
+/// Peer management configuration
+#[derive(Debug, Clone)]
+pub struct PeerConfig {
+    /// Maximum connection attempts before marking as failed
+    pub max_connection_attempts: u32,
+    /// Connection timeout duration
+    pub connection_timeout: Duration,
+    /// Health check interval
+    pub health_check_interval: Duration,
+    /// Maximum idle time before disconnection
+    pub max_idle_time: Duration,
+    /// Peer group
+    pub group: PeerGroup,
+    /// Auto-reconnect enabled
+    pub auto_reconnect: bool,
+    /// Priority level (higher = more important)
+    pub priority: u8,
+}
+
 /// Enhanced peer information with connection state
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -76,6 +152,18 @@ pub struct PeerInfo {
     pub last_attempt: Option<DateTime<Utc>>,
     /// Discovery information
     pub discovery_info: Option<DiscoveryInfo>,
+    /// Peer health status
+    pub health: PeerHealth,
+    /// Peer statistics
+    pub stats: PeerStats,
+    /// Peer configuration
+    pub config: PeerConfig,
+    /// Connection start time (if connected)
+    pub connection_start_time: Option<DateTime<Utc>>,
+    /// Last health check
+    pub last_health_check: Option<DateTime<Utc>>,
+    /// Peer tags for categorization
+    pub tags: HashSet<String>,
 }
 
 /// Network manager for SAVED
@@ -102,6 +190,14 @@ pub struct NetworkManager {
     discovery_enabled: Arc<Mutex<bool>>,
     /// Discovery interval
     discovery_interval: Duration,
+    /// Peer management settings
+    peer_management_enabled: Arc<Mutex<bool>>,
+    /// Health check interval
+    health_check_interval: Duration,
+    /// Peer statistics history
+    peer_stats_history: Arc<Mutex<HashMap<String, VecDeque<PeerStats>>>>,
+    /// Peer groups
+    peer_groups: Arc<Mutex<HashMap<PeerGroup, HashSet<String>>>>,
 }
 
 impl NetworkManager {
@@ -123,7 +219,41 @@ impl NetworkManager {
             service_type: "_saved._tcp".to_string(),
             discovery_enabled: Arc::new(Mutex::new(true)),
             discovery_interval: Duration::from_secs(10),
+            peer_management_enabled: Arc::new(Mutex::new(true)),
+            health_check_interval: Duration::from_secs(60),
+            peer_stats_history: Arc::new(Mutex::new(HashMap::new())),
+            peer_groups: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Create default peer configuration
+    fn create_default_peer_config() -> PeerConfig {
+        PeerConfig {
+            max_connection_attempts: 5,
+            connection_timeout: Duration::from_secs(30),
+            health_check_interval: Duration::from_secs(60),
+            max_idle_time: Duration::from_secs(300), // 5 minutes
+            group: PeerGroup::Local,
+            auto_reconnect: true,
+            priority: 5, // Medium priority
+        }
+    }
+
+    /// Create default peer statistics
+    fn create_default_peer_stats() -> PeerStats {
+        PeerStats {
+            total_connection_attempts: 0,
+            successful_connections: 0,
+            failed_connections: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            last_successful_connection: None,
+            last_failed_connection: None,
+            avg_connection_duration: Duration::from_secs(0),
+            total_connection_time: Duration::from_secs(0),
+            disconnection_count: 0,
+            last_activity: Utc::now(),
+        }
     }
 
     /// Start listening on the given addresses
@@ -186,6 +316,12 @@ impl NetworkManager {
             connection_attempts: 1,
             last_attempt: Some(Utc::now()),
             discovery_info: Some(discovery_info.clone()),
+            health: PeerHealth::Unknown,
+            stats: Self::create_default_peer_stats(),
+            config: Self::create_default_peer_config(),
+            connection_start_time: None,
+            last_health_check: None,
+            tags: HashSet::new(),
         };
         
         peers.insert(device_id.clone(), peer_info);
@@ -509,6 +645,222 @@ impl NetworkManager {
         self.discovery_interval = interval;
     }
 
+    // ===== PEER MANAGEMENT METHODS =====
+
+    /// Start peer management (health checks, statistics, etc.)
+    pub async fn start_peer_management(&mut self) -> Result<()> {
+        let mut enabled = self.peer_management_enabled.lock().await;
+        *enabled = true;
+        drop(enabled);
+        
+        // Start health check background task
+        let health_check_interval = self.health_check_interval;
+        let connected_peers = self.connected_peers.clone();
+        let event_sender = self.event_sender.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(health_check_interval).await;
+                
+                // Perform health checks on all connected peers
+                Self::perform_health_checks(&connected_peers, &event_sender).await;
+            }
+        });
+        
+        Ok(())
+    }
+
+    /// Stop peer management
+    pub async fn stop_peer_management(&mut self) -> Result<()> {
+        let mut enabled = self.peer_management_enabled.lock().await;
+        *enabled = false;
+        Ok(())
+    }
+
+    /// Perform health checks on all connected peers
+    async fn perform_health_checks(
+        connected_peers: &Arc<Mutex<HashMap<String, PeerInfo>>>,
+        _event_sender: &mpsc::UnboundedSender<Event>,
+    ) {
+        let mut peers = connected_peers.lock().await;
+        let now = Utc::now();
+        
+        for (_device_id, peer_info) in peers.iter_mut() {
+            if peer_info.connection_state == ConnectionState::Connected {
+                // Update last health check
+                peer_info.last_health_check = Some(now);
+                
+                // Simple health check: if last activity was too long ago, mark as degraded
+                let time_since_activity = now.signed_duration_since(peer_info.stats.last_activity);
+                if time_since_activity.num_seconds() > 300 { // 5 minutes
+                    peer_info.health = PeerHealth::Degraded;
+                } else {
+                    peer_info.health = PeerHealth::Healthy;
+                }
+                
+                // Update last seen
+                peer_info.last_seen = now;
+            }
+        }
+    }
+
+    /// Get peer statistics
+    pub async fn get_peer_stats(&self, device_id: &str) -> Option<PeerStats> {
+        let peers = self.connected_peers.lock().await;
+        peers.get(device_id).map(|peer_info| peer_info.stats.clone())
+    }
+
+    /// Update peer statistics
+    pub async fn update_peer_stats(&mut self, device_id: &str, stats: PeerStats) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(device_id) {
+            peer_info.stats = stats.clone();
+            
+            // Add to statistics history
+            let mut history = self.peer_stats_history.lock().await;
+            let history_entry = history.entry(device_id.to_string()).or_insert_with(VecDeque::new);
+            history_entry.push_back(stats);
+            
+            // Keep only last 100 entries
+            if history_entry.len() > 100 {
+                history_entry.pop_front();
+            }
+        }
+        Ok(())
+    }
+
+    /// Get peer health status
+    pub async fn get_peer_health(&self, device_id: &str) -> Option<PeerHealth> {
+        let peers = self.connected_peers.lock().await;
+        peers.get(device_id).map(|peer_info| peer_info.health.clone())
+    }
+
+    /// Set peer health status
+    pub async fn set_peer_health(&mut self, device_id: &str, health: PeerHealth) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(device_id) {
+            peer_info.health = health;
+        }
+        Ok(())
+    }
+
+    /// Get peer configuration
+    pub async fn get_peer_config(&self, device_id: &str) -> Option<PeerConfig> {
+        let peers = self.connected_peers.lock().await;
+        peers.get(device_id).map(|peer_info| peer_info.config.clone())
+    }
+
+    /// Update peer configuration
+    pub async fn update_peer_config(&mut self, device_id: &str, config: PeerConfig) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(device_id) {
+            peer_info.config = config.clone();
+            
+            // Update peer groups
+            let mut groups = self.peer_groups.lock().await;
+            
+            // Remove from old group
+            for (group, peer_set) in groups.iter_mut() {
+                peer_set.remove(device_id);
+            }
+            
+            // Add to new group
+            groups.entry(config.group.clone()).or_insert_with(HashSet::new).insert(device_id.to_string());
+        }
+        Ok(())
+    }
+
+    /// Add tag to peer
+    pub async fn add_peer_tag(&mut self, device_id: &str, tag: String) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(device_id) {
+            peer_info.tags.insert(tag);
+        }
+        Ok(())
+    }
+
+    /// Remove tag from peer
+    pub async fn remove_peer_tag(&mut self, device_id: &str, tag: &str) -> Result<()> {
+        let mut peers = self.connected_peers.lock().await;
+        if let Some(peer_info) = peers.get_mut(device_id) {
+            peer_info.tags.remove(tag);
+        }
+        Ok(())
+    }
+
+    /// Get peers by tag
+    pub async fn get_peers_by_tag(&self, tag: &str) -> Vec<String> {
+        let peers = self.connected_peers.lock().await;
+        peers.iter()
+            .filter(|(_, peer_info)| peer_info.tags.contains(tag))
+            .map(|(device_id, _)| device_id.clone())
+            .collect()
+    }
+
+    /// Get peers by group
+    pub async fn get_peers_by_group(&self, group: &PeerGroup) -> Vec<String> {
+        let groups = self.peer_groups.lock().await;
+        groups.get(group).map(|peer_set| peer_set.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Get all peer groups
+    pub async fn get_peer_groups(&self) -> HashMap<PeerGroup, Vec<String>> {
+        let groups = self.peer_groups.lock().await;
+        groups.iter()
+            .map(|(group, peer_set)| (group.clone(), peer_set.iter().cloned().collect()))
+            .collect()
+    }
+
+    /// Get peer statistics history
+    pub async fn get_peer_stats_history(&self, device_id: &str) -> Vec<PeerStats> {
+        let history = self.peer_stats_history.lock().await;
+        history.get(device_id).map(|deque| deque.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Get all peer statistics
+    pub async fn get_all_peer_stats(&self) -> HashMap<String, PeerStats> {
+        let peers = self.connected_peers.lock().await;
+        peers.iter()
+            .map(|(device_id, peer_info)| (device_id.clone(), peer_info.stats.clone()))
+            .collect()
+    }
+
+    /// Get peers by health status
+    pub async fn get_peers_by_health(&self, health: &PeerHealth) -> Vec<String> {
+        let peers = self.connected_peers.lock().await;
+        peers.iter()
+            .filter(|(_, peer_info)| peer_info.health == *health)
+            .map(|(device_id, _)| device_id.clone())
+            .collect()
+    }
+
+    /// Get peer management summary
+    pub async fn get_peer_management_summary(&self) -> HashMap<String, u32> {
+        let peers = self.connected_peers.lock().await;
+        let mut summary = HashMap::new();
+        
+        summary.insert("total_peers".to_string(), peers.len() as u32);
+        summary.insert("connected_peers".to_string(), 
+            peers.values().filter(|p| p.connection_state == ConnectionState::Connected).count() as u32);
+        summary.insert("healthy_peers".to_string(), 
+            peers.values().filter(|p| p.health == PeerHealth::Healthy).count() as u32);
+        summary.insert("unhealthy_peers".to_string(), 
+            peers.values().filter(|p| p.health == PeerHealth::Unhealthy).count() as u32);
+        
+        summary
+    }
+
+    /// Check if peer management is enabled
+    pub async fn is_peer_management_enabled(&self) -> bool {
+        let enabled = self.peer_management_enabled.lock().await;
+        *enabled
+    }
+
+    /// Set health check interval
+    pub fn set_health_check_interval(&mut self, interval: Duration) {
+        self.health_check_interval = interval;
+    }
+
     /// Check if a peer is authorized
     pub async fn is_peer_authorized(&self, device_id: &str) -> Result<bool> {
         // In a real implementation, this would check against the storage
@@ -798,5 +1150,205 @@ mod tests {
         // The interval is set (we can't easily test the actual timing without more complex setup)
         // This test mainly ensures the method doesn't panic
         assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_peer_management() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Initially peer management should be enabled
+        let enabled = network_manager.is_peer_management_enabled().await;
+        assert!(enabled);
+        
+        // Start peer management
+        let result = network_manager.start_peer_management().await;
+        assert!(result.is_ok());
+        
+        // Stop peer management
+        let result = network_manager.stop_peer_management().await;
+        assert!(result.is_ok());
+        
+        let enabled = network_manager.is_peer_management_enabled().await;
+        assert!(!enabled);
+    }
+
+    #[tokio::test]
+    async fn test_peer_health_management() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "health-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Check initial health (should be Unknown)
+        let health = network_manager.get_peer_health(&device_id).await;
+        assert!(matches!(health, Some(PeerHealth::Unknown)));
+        
+        // Set health to Healthy
+        let result = network_manager.set_peer_health(&device_id, PeerHealth::Healthy).await;
+        assert!(result.is_ok());
+        
+        let health = network_manager.get_peer_health(&device_id).await;
+        assert!(matches!(health, Some(PeerHealth::Healthy)));
+        
+        // Get peers by health
+        let healthy_peers = network_manager.get_peers_by_health(&PeerHealth::Healthy).await;
+        assert!(healthy_peers.contains(&device_id));
+    }
+
+    #[tokio::test]
+    async fn test_peer_statistics() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "stats-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Get initial stats
+        let stats = network_manager.get_peer_stats(&device_id).await;
+        assert!(stats.is_some());
+        let initial_stats = stats.unwrap();
+        assert_eq!(initial_stats.total_connection_attempts, 0);
+        
+        // Update stats
+        let mut new_stats = initial_stats.clone();
+        new_stats.total_connection_attempts = 5;
+        new_stats.bytes_sent = 1024;
+        new_stats.bytes_received = 2048;
+        
+        let result = network_manager.update_peer_stats(&device_id, new_stats.clone()).await;
+        assert!(result.is_ok());
+        
+        // Verify stats were updated
+        let updated_stats = network_manager.get_peer_stats(&device_id).await.unwrap();
+        assert_eq!(updated_stats.total_connection_attempts, 5);
+        assert_eq!(updated_stats.bytes_sent, 1024);
+        assert_eq!(updated_stats.bytes_received, 2048);
+        
+        // Check stats history
+        let history = network_manager.get_peer_stats_history(&device_id).await;
+        assert!(history.len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_peer_groups() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "group-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Get initial config (should be Local group)
+        let config = network_manager.get_peer_config(&device_id).await.unwrap();
+        assert!(matches!(config.group, PeerGroup::Local));
+        
+        // Update config to Internet group
+        let mut new_config = config.clone();
+        new_config.group = PeerGroup::Internet;
+        new_config.priority = 10;
+        
+        let result = network_manager.update_peer_config(&device_id, new_config).await;
+        assert!(result.is_ok());
+        
+        // Check peer is in Internet group
+        let internet_peers = network_manager.get_peers_by_group(&PeerGroup::Internet).await;
+        assert!(internet_peers.contains(&device_id));
+        
+        // Check peer is not in Local group
+        let local_peers = network_manager.get_peers_by_group(&PeerGroup::Local).await;
+        assert!(!local_peers.contains(&device_id));
+        
+        // Get all groups
+        let groups = network_manager.get_peer_groups().await;
+        assert!(groups.contains_key(&PeerGroup::Internet));
+    }
+
+    #[tokio::test]
+    async fn test_peer_tags() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Connect to a peer
+        let device_id = "tag-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Add tags
+        let result = network_manager.add_peer_tag(&device_id, "important".to_string()).await;
+        assert!(result.is_ok());
+        
+        let result = network_manager.add_peer_tag(&device_id, "mobile".to_string()).await;
+        assert!(result.is_ok());
+        
+        // Get peers by tag
+        let important_peers = network_manager.get_peers_by_tag("important").await;
+        assert!(important_peers.contains(&device_id));
+        
+        let mobile_peers = network_manager.get_peers_by_tag("mobile").await;
+        assert!(mobile_peers.contains(&device_id));
+        
+        // Remove tag
+        let result = network_manager.remove_peer_tag(&device_id, "mobile").await;
+        assert!(result.is_ok());
+        
+        // Check tag was removed
+        let mobile_peers = network_manager.get_peers_by_tag("mobile").await;
+        assert!(!mobile_peers.contains(&device_id));
+        
+        // Important tag should still be there
+        let important_peers = network_manager.get_peers_by_tag("important").await;
+        assert!(important_peers.contains(&device_id));
+    }
+
+    #[tokio::test]
+    async fn test_peer_management_summary() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        let event_log = EventLog::new();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender, event_log).await.unwrap();
+        
+        // Initially no peers
+        let summary = network_manager.get_peer_management_summary().await;
+        assert_eq!(summary.get("total_peers").unwrap(), &0);
+        assert_eq!(summary.get("connected_peers").unwrap(), &0);
+        
+        // Connect to a peer
+        let device_id = "summary-test-peer".to_string();
+        let result = network_manager.connect_to_peer(device_id.clone(), vec!["/ip4/127.0.0.1/tcp/8080".to_string()]).await;
+        assert!(result.is_ok());
+        
+        // Set peer as healthy
+        let result = network_manager.set_peer_health(&device_id, PeerHealth::Healthy).await;
+        assert!(result.is_ok());
+        
+        // Check summary
+        let summary = network_manager.get_peer_management_summary().await;
+        assert_eq!(summary.get("total_peers").unwrap(), &1);
+        assert_eq!(summary.get("connected_peers").unwrap(), &1);
+        assert_eq!(summary.get("healthy_peers").unwrap(), &1);
+        assert_eq!(summary.get("unhealthy_peers").unwrap(), &0);
     }
 }
