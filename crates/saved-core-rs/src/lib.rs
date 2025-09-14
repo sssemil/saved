@@ -1,7 +1,7 @@
 //! SAVED Core Library
 //!
-//! A P2P-first, cloud-optional sync library for personal data with end-to-end encryption.
-//! 
+//! A P2P-first sync library for personal data with end-to-end encryption.
+//!
 //! This library provides the core functionality for:
 //! - End-to-end encrypted messaging and file sync
 //! - P2P networking with conflict-free replicated data types (CRDTs)
@@ -33,16 +33,16 @@
 //! ```
 
 pub mod crypto;
-pub mod storage;
+pub mod error;
 pub mod events;
+pub mod protobuf;
+pub mod storage;
 pub mod sync;
 pub mod types;
-pub mod error;
-pub mod protobuf;
 
 // Re-export main types and functions
-pub use types::*;
 pub use error::{Error, Result};
+pub use types::*;
 
 /// Create or open an account with the given configuration
 pub async fn create_or_open_account(config: Config) -> Result<AccountHandle> {
@@ -58,13 +58,13 @@ mod tests {
     async fn create_test_account(name: &str) -> Result<(AccountHandle, TempDir)> {
         let temp_dir = TempDir::new().unwrap();
         let account_path = temp_dir.path().join(name);
-        
+
         // Create the directory
         std::fs::create_dir_all(&account_path).unwrap();
-        
+
         let config = Config {
             storage_path: account_path,
-            network_port: 0, // Use random port for tests
+            network_port: 0,    // Use random port for tests
             enable_mdns: false, // Disable mDNS for tests
             allow_public_relays: false,
             bootstrap_multiaddrs: Vec::new(),
@@ -73,7 +73,7 @@ mod tests {
             max_parallel_chunks: 4,
             storage_backend: crate::storage::StorageBackend::Memory, // Use in-memory storage for tests
         };
-        
+
         let account = AccountHandle::create_or_open(config).await?;
         Ok((account, temp_dir))
     }
@@ -103,20 +103,32 @@ mod tests {
 
         // Device A creates initial messages
         println!("📝 Device A creating messages...");
-        let msg1_id = device_a.create_message(create_test_content("A", 1), Vec::new()).await?;
-        let msg2_id = device_a.create_message(create_test_content("A", 2), Vec::new()).await?;
+        let msg1_id = device_a
+            .create_message(create_test_content("A", 1), Vec::new())
+            .await?;
+        let msg2_id = device_a
+            .create_message(create_test_content("A", 2), Vec::new())
+            .await?;
         println!("✅ Device A created messages: {:?}, {:?}", msg1_id, msg2_id);
 
         // Device B creates messages
         println!("📝 Device B creating messages...");
-        let msg3_id = device_b.create_message(create_test_content("B", 1), Vec::new()).await?;
-        let msg4_id = device_b.create_message(create_test_content("B", 2), Vec::new()).await?;
+        let msg3_id = device_b
+            .create_message(create_test_content("B", 1), Vec::new())
+            .await?;
+        let msg4_id = device_b
+            .create_message(create_test_content("B", 2), Vec::new())
+            .await?;
         println!("✅ Device B created messages: {:?}, {:?}", msg3_id, msg4_id);
 
         // Device C creates messages
         println!("📝 Device C creating messages...");
-        let msg5_id = device_c.create_message(create_test_content("C", 1), Vec::new()).await?;
-        let msg6_id = device_c.create_message(create_test_content("C", 2), Vec::new()).await?;
+        let msg5_id = device_c
+            .create_message(create_test_content("C", 1), Vec::new())
+            .await?;
+        let msg6_id = device_c
+            .create_message(create_test_content("C", 2), Vec::new())
+            .await?;
         println!("✅ Device C created messages: {:?}, {:?}", msg5_id, msg6_id);
 
         // For now, just verify that each device can create messages
@@ -148,11 +160,15 @@ mod tests {
         let (_device_b, _temp_b) = create_test_account("device_b_edit").await?;
 
         // Device A creates a message
-        let msg_id = device_a.create_message("Original message".to_string(), Vec::new()).await?;
+        let msg_id = device_a
+            .create_message("Original message".to_string(), Vec::new())
+            .await?;
         println!("✅ Device A created message: {:?}", msg_id);
 
         // Device A edits the message
-        device_a.edit_message(msg_id, "Edited by Device A".to_string()).await?;
+        device_a
+            .edit_message(msg_id, "Edited by Device A".to_string())
+            .await?;
         println!("✅ Device A edited message");
 
         // Check that the message was edited
@@ -173,9 +189,15 @@ mod tests {
         let (mut device_a, _temp_a) = create_test_account("device_a_delete").await?;
 
         // Device A creates messages
-        let _msg1_id = device_a.create_message("Message 1".to_string(), Vec::new()).await?;
-        let msg2_id = device_a.create_message("Message 2".to_string(), Vec::new()).await?;
-        let _msg3_id = device_a.create_message("Message 3".to_string(), Vec::new()).await?;
+        let _msg1_id = device_a
+            .create_message("Message 1".to_string(), Vec::new())
+            .await?;
+        let msg2_id = device_a
+            .create_message("Message 2".to_string(), Vec::new())
+            .await?;
+        let _msg3_id = device_a
+            .create_message("Message 3".to_string(), Vec::new())
+            .await?;
 
         println!("✅ Device A created 3 messages");
 
@@ -215,8 +237,10 @@ mod tests {
         let (_filename2, _content2) = create_test_attachment("A", 2);
 
         // Device A creates a message with attachments
-        let msg_id = device_a.create_message("Message with attachments".to_string(), Vec::new()).await?;
-        
+        let msg_id = device_a
+            .create_message("Message with attachments".to_string(), Vec::new())
+            .await?;
+
         println!("✅ Device A created message with attachments: {:?}", msg_id);
 
         // For now, just verify the message was created
@@ -238,10 +262,16 @@ mod tests {
         let (mut device_a, _temp_a) = create_test_account("device_a_large").await?;
 
         // Create a large message (simulate a long document)
-        let large_content = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(1000);
-        println!("📝 Creating large message ({} characters)...", large_content.len());
+        let large_content =
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(1000);
+        println!(
+            "📝 Creating large message ({} characters)...",
+            large_content.len()
+        );
 
-        let msg_id = device_a.create_message(large_content.clone(), Vec::new()).await?;
+        let msg_id = device_a
+            .create_message(large_content.clone(), Vec::new())
+            .await?;
         println!("✅ Device A created large message: {:?}", msg_id);
 
         // Verify the message was created with correct content
@@ -264,9 +294,15 @@ mod tests {
         let (mut device_c, _temp_c) = create_test_account("device_c_partition").await?;
 
         // Each device creates messages independently
-        let _msg1_id = device_a.create_message("Initial message".to_string(), Vec::new()).await?;
-        let _msg2_id = device_b.create_message("B message".to_string(), Vec::new()).await?;
-        let _msg3_id = device_c.create_message("C message".to_string(), Vec::new()).await?;
+        let _msg1_id = device_a
+            .create_message("Initial message".to_string(), Vec::new())
+            .await?;
+        let _msg2_id = device_b
+            .create_message("B message".to_string(), Vec::new())
+            .await?;
+        let _msg3_id = device_c
+            .create_message("C message".to_string(), Vec::new())
+            .await?;
 
         println!("✅ All devices created messages independently");
 

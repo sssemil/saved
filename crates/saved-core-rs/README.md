@@ -8,7 +8,7 @@ A private, end-to-end encrypted personal vault that syncs notes, messages, and f
 - **End-to-end encryption**: Account-scoped vault key with XChaCha20-Poly1305
 - **CRDT semantics**: Append-only event log with conflict-free replicated data types
 - **Content-addressed storage**: Encrypted chunk store with deduplication
-- **Zero-knowledge**: Optional cloud backup without data exposure
+- **Zero-knowledge**: End-to-end encryption ensures data privacy
 - **No servers required**: Works entirely peer-to-peer
 
 ## Architecture
@@ -105,7 +105,6 @@ This is a work in progress. The core library structure is implemented but some f
 - ✅ Protobuf message definitions
 - 🚧 Device linking flow
 - 🚧 Complete API implementation
-- 🚧 Cloud backup integration
 
 ## Contributing
 

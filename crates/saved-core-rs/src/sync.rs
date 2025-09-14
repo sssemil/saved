@@ -3,10 +3,10 @@
 //! Handles synchronization of operations and chunks between devices
 //! using the CRDT event log and content-addressed storage.
 
+use crate::crypto::{blake3_hash, DeviceKey, VaultKey};
 use crate::error::Result;
-use crate::events::{Op, OpHash, EventLog, Operation};
-use crate::storage::{Storage, sqlite::ChunkId};
-use crate::crypto::{VaultKey, DeviceKey, blake3_hash};
+use crate::events::{EventLog, Op, OpHash, Operation};
+use crate::storage::{sqlite::ChunkId, Storage};
 use crate::types::{Event, MessageId};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -37,7 +37,7 @@ impl SyncManager {
         event_sender: mpsc::UnboundedSender<Event>,
     ) -> Self {
         let event_log = EventLog::new();
-        
+
         Self {
             storage,
             storage_path,
@@ -49,16 +49,20 @@ impl SyncManager {
     }
 
     /// Create a new message
-    pub async fn create_message(&mut self, body: String, attachments: Vec<PathBuf>) -> Result<MessageId> {
+    pub async fn create_message(
+        &mut self,
+        body: String,
+        attachments: Vec<PathBuf>,
+    ) -> Result<MessageId> {
         let msg_id = MessageId::new();
-        
+
         // Process attachments
         let mut attachment_cids = Vec::new();
         for attachment_path in attachments {
             let chunk_cids = self.process_attachment(&attachment_path).await?;
             attachment_cids.extend(chunk_cids);
         }
-        
+
         // Create operation
         let operation = Operation::CreateMessage {
             msg_id: msg_id.0,
@@ -67,10 +71,10 @@ impl SyncManager {
             attachments: attachment_cids,
             created_at: chrono::Utc::now(),
         };
-        
+
         // Add to event log
         self.add_operation(operation).await?;
-        
+
         Ok(msg_id)
     }
 
@@ -81,7 +85,7 @@ impl SyncManager {
             body: new_body,
             edited_at: chrono::Utc::now(),
         };
-        
+
         self.add_operation(operation).await?;
         Ok(())
     }
@@ -93,7 +97,7 @@ impl SyncManager {
             reason: None,
             deleted_at: chrono::Utc::now(),
         };
-        
+
         self.add_operation(operation).await?;
         Ok(())
     }
@@ -104,7 +108,7 @@ impl SyncManager {
             msg_id: msg_id.0,
             timestamp: chrono::Utc::now(),
         };
-        
+
         self.add_operation(operation).await?;
         Ok(())
     }
@@ -113,30 +117,32 @@ impl SyncManager {
     async fn process_attachment(&mut self, path: &PathBuf) -> Result<Vec<ChunkId>> {
         let file_data = tokio::fs::read(path).await?;
         let mut chunk_cids = Vec::new();
-        
+
         // Chunk the file (2 MiB chunks)
         const CHUNK_SIZE: usize = 2 * 1024 * 1024;
         let mut offset = 0;
-        
+
         while offset < file_data.len() {
             let end = std::cmp::min(offset + CHUNK_SIZE, file_data.len());
             let chunk_data = &file_data[offset..end];
-            
+
             // Compute chunk ID (BLAKE3 hash of plaintext)
             let chunk_id = blake3_hash(chunk_data);
-            
+
             // Encrypt chunk with convergent encryption
             let chunk_key = crate::crypto::derive_chunk_key(&self.vault_key, &chunk_id)?;
             let nonce = crate::crypto::generate_nonce();
             let encrypted_chunk = crate::crypto::encrypt(&chunk_key, &nonce, chunk_data)?;
-            
+
             // Store chunk
-            self.storage.store_chunk(&chunk_id, &encrypted_chunk).await?;
-            
+            self.storage
+                .store_chunk(&chunk_id, &encrypted_chunk)
+                .await?;
+
             chunk_cids.push(chunk_id);
             offset = end;
         }
-        
+
         Ok(chunk_cids)
     }
 
@@ -147,20 +153,30 @@ impl SyncManager {
             self.device_key.public_key_bytes(),
             self.event_log.current_lamport() + 1,
         );
-        
+
         let parents = self.event_log.get_heads().iter().cloned().collect();
-        let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation.clone());
+        let op = Op::new(
+            op_id,
+            self.event_log.current_lamport() + 1,
+            parents,
+            operation.clone(),
+        );
         let op_hash = op.hash();
-        
+
         // Add to event log
         self.event_log.add_operation(op.clone())?;
-        
+
         // Store in database
         self.storage.store_operation(&op).await?;
-        
+
         // Also create and store Message objects for testing
         match operation {
-            Operation::CreateMessage { msg_id, body, created_at, .. } => {
+            Operation::CreateMessage {
+                msg_id,
+                body,
+                created_at,
+                ..
+            } => {
                 let message = crate::types::Message {
                     id: crate::types::MessageId(msg_id),
                     content: body,
@@ -172,27 +188,37 @@ impl SyncManager {
             }
             Operation::EditMessage { msg_id, body, .. } => {
                 // Update existing message
-                if let Some(mut message) = self.storage.get_message(&crate::types::MessageId(msg_id)).await? {
+                if let Some(mut message) = self
+                    .storage
+                    .get_message(&crate::types::MessageId(msg_id))
+                    .await?
+                {
                     message.content = body;
                     self.storage.store_message(&message).await?;
                 }
             }
             Operation::DeleteMessage { msg_id, .. } => {
                 // Mark message as deleted
-                if let Some(mut message) = self.storage.get_message(&crate::types::MessageId(msg_id)).await? {
+                if let Some(mut message) = self
+                    .storage
+                    .get_message(&crate::types::MessageId(msg_id))
+                    .await?
+                {
                     message.is_deleted = true;
                     self.storage.store_message(&message).await?;
                 }
             }
             Operation::Purge { msg_id, .. } => {
                 // Remove message completely
-                self.storage.delete_message(&crate::types::MessageId(msg_id)).await?;
+                self.storage
+                    .delete_message(&crate::types::MessageId(msg_id))
+                    .await?;
             }
             _ => {
                 // Other operations don't need message handling
             }
         }
-        
+
         Ok(op_hash)
     }
 
@@ -222,15 +248,20 @@ impl SyncManager {
             msg_id: [0u8; 32],
             attachment_cids: Vec::new(),
         };
-        
+
         let op_id = crate::events::OpId::new(
             self.device_key.public_key_bytes(),
             self.event_log.current_lamport() + 1,
         );
-        
+
         let parents = self.event_log.get_heads().iter().cloned().collect();
-        let op = Op::new(op_id, self.event_log.current_lamport() + 1, parents, operation);
-        
+        let op = Op::new(
+            op_id,
+            self.event_log.current_lamport() + 1,
+            parents,
+            operation,
+        );
+
         Ok(op)
     }
 

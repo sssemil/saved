@@ -6,7 +6,7 @@ use std::time::Duration;
 /// Format a duration in a human-readable way
 pub fn format_duration(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
-    
+
     if total_seconds < 60 {
         format!("{}s", total_seconds)
     } else if total_seconds < 3600 {
@@ -32,18 +32,18 @@ pub fn format_duration(duration: Duration) -> String {
 pub fn format_file_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     const THRESHOLD: u64 = 1024;
-    
+
     if bytes < THRESHOLD {
         format!("{} {}", bytes, UNITS[0])
     } else {
         let mut size = bytes as f64;
         let mut unit_index = 0;
-        
+
         while size >= THRESHOLD as f64 && unit_index < UNITS.len() - 1 {
             size /= THRESHOLD as f64;
             unit_index += 1;
         }
-        
+
         if size.fract() == 0.0 {
             format!("{:.0} {}", size, UNITS[unit_index])
         } else {

@@ -3,11 +3,11 @@
 //! Implements append-only operation log with CRDT semantics for edits/deletes.
 //! Operations have IDs, lamport timestamps, and causality tracking.
 
+use crate::crypto::{decrypt, derive_event_key, encrypt, generate_nonce, DeviceKey, VaultKey};
 use crate::error::{Error, Result};
-use crate::crypto::{DeviceKey, VaultKey, derive_event_key, encrypt, decrypt, generate_nonce};
 use crate::protobuf::*;
-use prost::Message;
 use chrono::{DateTime, Utc};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -42,14 +42,14 @@ impl OpId {
         if bytes.len() != 40 {
             return Err(Error::Sync("Invalid OpId length".to_string()));
         }
-        
+
         let mut device_pubkey = [0u8; 32];
         device_pubkey.copy_from_slice(&bytes[0..32]);
-        
+
         let mut counter_bytes = [0u8; 8];
         counter_bytes.copy_from_slice(&bytes[32..40]);
         let counter = u64::from_le_bytes(counter_bytes);
-        
+
         Ok(Self {
             device_pubkey,
             counter,
@@ -149,17 +149,16 @@ impl Op {
     /// Encrypt the operation for storage/transmission
     pub fn encrypt(&self, vault_key: &VaultKey, device_key: &DeviceKey) -> Result<OpEnvelope> {
         // Serialize the operation
-        let operation_bytes = serde_json::to_vec(&self.operation)
-            .map_err(|e| Error::Serialization(e))?;
-        
+        let operation_bytes = serde_json::to_vec(&self.operation).map_err(Error::Serialization)?;
+
         // Derive encryption key
         let op_id_bytes = self.id.to_bytes();
         let event_key = derive_event_key(vault_key, &op_id_bytes)?;
-        
+
         // Generate nonce and encrypt
         let nonce = generate_nonce();
         let ciphertext = encrypt(&event_key, &nonce, &operation_bytes)?;
-        
+
         // Create header
         let header = OpHeader {
             op_id: op_id_bytes,
@@ -168,16 +167,16 @@ impl Op {
             signer: device_key.public_key_bytes().to_vec(),
             sig: Vec::new(), // Will be filled after signing
         };
-        
+
         // Sign the header and ciphertext
         let mut to_sign = Vec::new();
         to_sign.extend_from_slice(&header.encode_to_vec());
         to_sign.extend_from_slice(&ciphertext);
         let signature = device_key.sign(&to_sign);
-        
+
         let mut signed_header = header;
         signed_header.sig = signature.to_bytes().to_vec();
-        
+
         Ok(OpEnvelope {
             header: Some(signed_header),
             ciphertext,
@@ -190,40 +189,44 @@ impl Op {
         vault_key: &VaultKey,
         device_key: &DeviceKey,
     ) -> Result<Self> {
-        let header = envelope.header.ok_or_else(|| Error::Sync("Missing operation header".to_string()))?;
-        
+        let header = envelope
+            .header
+            .ok_or_else(|| Error::Sync("Missing operation header".to_string()))?;
+
         // Verify signature
         let mut to_verify = Vec::new();
         to_verify.extend_from_slice(&header.encode_to_vec());
         to_verify.extend_from_slice(&envelope.ciphertext);
-        
+
         if header.sig.len() != 64 {
             return Err(Error::Crypto("Invalid signature length".to_string()));
         }
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&header.sig[..]);
         let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        
+
         device_key.verify(&to_verify, &signature)?;
-        
+
         // Decrypt the operation
         let event_key = derive_event_key(vault_key, &header.op_id)?;
         let nonce = generate_nonce(); // TODO: Extract nonce from envelope
         let operation_bytes = decrypt(&event_key, &nonce, &envelope.ciphertext)?;
-        
-        let operation: Operation = serde_json::from_slice(&operation_bytes)
-            .map_err(|e| Error::Serialization(e))?;
-        
+
+        let operation: Operation =
+            serde_json::from_slice(&operation_bytes).map_err(Error::Serialization)?;
+
         // Reconstruct the operation
         let id = OpId::from_bytes(&header.op_id)?;
-        let parents = header.parents.iter()
+        let parents = header
+            .parents
+            .iter()
             .map(|p| {
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&p[0..32]);
                 hash
             })
             .collect();
-        
+
         Ok(Op {
             id,
             lamport: header.lamport,
@@ -247,6 +250,12 @@ pub struct EventLog {
     current_lamport: LamportTimestamp,
 }
 
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventLog {
     /// Create a new event log
     pub fn new() -> Self {
@@ -261,30 +270,31 @@ impl EventLog {
     /// Add an operation to the log
     pub fn add_operation(&mut self, op: Op) -> Result<OpHash> {
         let hash = op.hash();
-        
+
         // Check for duplicate
         if self.operations.contains_key(&hash) {
             return Ok(hash);
         }
-        
+
         // Update lamport timestamp
         self.current_lamport = self.current_lamport.max(op.lamport + 1);
-        
+
         // Add to device index
-        self.by_device.entry(op.id.device_pubkey)
-            .or_insert_with(HashMap::new)
+        self.by_device
+            .entry(op.id.device_pubkey)
+            .or_default()
             .insert(op.id.counter, hash);
-        
+
         // Update heads
         self.heads.remove(&hash); // Remove if it was a head
         for parent in &op.parents {
             self.heads.remove(parent);
         }
         self.heads.insert(hash);
-        
+
         // Store the operation
         self.operations.insert(hash, op);
-        
+
         Ok(hash)
     }
 
@@ -302,22 +312,22 @@ impl EventLog {
     pub fn get_operations_since(&self, since_heads: &[OpHash]) -> Vec<&Op> {
         let mut visited = HashSet::new();
         let mut result = Vec::new();
-        
+
         // Start from heads and traverse backwards
         let mut to_visit: Vec<OpHash> = since_heads.to_vec();
-        
+
         while let Some(hash) = to_visit.pop() {
             if visited.contains(&hash) {
                 continue;
             }
             visited.insert(hash);
-            
+
             if let Some(op) = self.operations.get(&hash) {
                 result.push(op);
                 to_visit.extend(&op.parents);
             }
         }
-        
+
         result
     }
 
@@ -329,7 +339,8 @@ impl EventLog {
     /// Get operations for a specific device
     pub fn get_device_operations(&self, device_pubkey: &[u8; 32]) -> Vec<&Op> {
         if let Some(device_ops) = self.by_device.get(device_pubkey) {
-            let mut ops: Vec<_> = device_ops.values()
+            let mut ops: Vec<_> = device_ops
+                .values()
                 .filter_map(|hash| self.operations.get(hash))
                 .collect();
             ops.sort_by_key(|op| op.id.counter);
@@ -357,17 +368,17 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{DeviceKey, generate_vault_key};
+    use crate::crypto::{generate_vault_key, DeviceKey};
 
     #[test]
     fn test_op_id_serialization() {
         let device_pubkey = [1u8; 32];
         let counter = 42u64;
         let op_id = OpId::new(device_pubkey, counter);
-        
+
         let bytes = op_id.to_bytes();
         let deserialized = OpId::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(op_id, deserialized);
     }
 
@@ -376,7 +387,7 @@ mod tests {
         let mut log = EventLog::new();
         let device_key = DeviceKey::generate();
         let vault_key = generate_vault_key();
-        
+
         let op = Op::new(
             OpId::new(device_key.public_key_bytes(), 1),
             1,
@@ -389,7 +400,7 @@ mod tests {
                 created_at: Utc::now(),
             },
         );
-        
+
         let hash = log.add_operation(op).unwrap();
         assert!(log.get_operation(&hash).is_some());
         assert_eq!(log.get_heads().len(), 1);

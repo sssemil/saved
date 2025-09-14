@@ -2,7 +2,7 @@
 name = "saved-core-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Core library for SAVED - Personal Messages Sync (P2P-first, Cloud-optional)"
+description = "Core library for SAVED - Personal Messages Sync (P2P-first)"
 authors = ["SAVED Team"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/saved/saved-core-rs"

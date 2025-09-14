@@ -143,10 +143,16 @@ async fn main() -> Result<()> {
         Commands::List { ids_only, limit } => {
             list_command(&cli.account_path, ids_only, limit, cli.verbose).await?;
         }
-        Commands::Edit { message_id, content } => {
+        Commands::Edit {
+            message_id,
+            content,
+        } => {
             edit_command(&cli.account_path, &message_id, &content, cli.verbose).await?;
         }
-        Commands::Delete { message_id, permanent } => {
+        Commands::Delete {
+            message_id,
+            permanent,
+        } => {
             delete_command(&cli.account_path, &message_id, permanent, cli.verbose).await?;
         }
         Commands::Show { message_id } => {

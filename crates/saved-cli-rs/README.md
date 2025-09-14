@@ -179,7 +179,6 @@ Error: Message content cannot be empty
 - Network discovery and connection
 - Device authentication
 - File attachment handling
-- Cloud backup integration
 
 ## Contributing
 

@@ -6,15 +6,15 @@
 //! - Reference counting for garbage collection
 
 use crate::error::Result;
-use crate::events::{Op, OpHash, EventLog};
-use crate::types::{MessageId, Message};
-use rusqlite::{Connection, params};
+use crate::events::{EventLog, Op};
+use crate::types::{Message, MessageId};
+use async_trait::async_trait;
+use rusqlite::{params, Connection};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
-use async_trait::async_trait;
 
 use super::trait_impl::{Storage, StorageStats};
 
@@ -40,20 +40,20 @@ impl SqliteStorage {
     pub fn open(account_path: PathBuf) -> Result<Self> {
         // Ensure account directory exists
         fs::create_dir_all(&account_path)?;
-        
+
         let chunks_path = account_path.join("chunks");
         fs::create_dir_all(&chunks_path)?;
-        
+
         // Open SQLite database
         let db_path = account_path.join("db.sqlite");
-        let mut db = Connection::open(db_path)?;
-        
+        let db = Connection::open(db_path)?;
+
         // Enable WAL mode for better concurrency
         db.execute("PRAGMA journal_mode=WAL", [])?;
         db.execute("PRAGMA synchronous=NORMAL", [])?;
         db.execute("PRAGMA cache_size=10000", [])?;
         db.execute("PRAGMA temp_store=memory", [])?;
-        
+
         let mut storage = Self {
             db: Arc::new(Mutex::new(db)),
             account_path,
@@ -61,10 +61,10 @@ impl SqliteStorage {
             event_log: EventLog::new(),
             chunk_refs: HashMap::new(),
         };
-        
+
         storage.init_schema()?;
         storage.load_chunk_refs()?;
-        
+
         Ok(storage)
     }
 
@@ -166,7 +166,7 @@ impl Storage for SqliteStorage {
     async fn store_operation(&self, operation: &Op) -> Result<()> {
         let hash = operation.hash();
         let db = self.db.lock().unwrap();
-        
+
         db.execute(
             "INSERT OR REPLACE INTO operations (
                 hash, op_id, device_pubkey, counter, lamport, parents,
@@ -178,8 +178,12 @@ impl Storage for SqliteStorage {
                 operation.id.device_pubkey.as_slice(),
                 operation.id.counter,
                 operation.lamport,
-                bincode::serialize(&operation.parents).map_err(|e| crate::error::Error::Sync(format!("Serialization error: {}", e)))?,
-                bincode::serialize(&operation.operation).map_err(|e| crate::error::Error::Sync(format!("Operation serialization error: {}", e)))?,
+                bincode::serialize(&operation.parents).map_err(|e| crate::error::Error::Sync(
+                    format!("Serialization error: {}", e)
+                ))?,
+                bincode::serialize(&operation.operation).map_err(|e| crate::error::Error::Sync(
+                    format!("Operation serialization error: {}", e)
+                ))?,
                 operation.timestamp.timestamp()
             ],
         )?;
@@ -192,7 +196,7 @@ impl Storage for SqliteStorage {
         let mut stmt = db.prepare(
             "SELECT hash, op_id, device_pubkey, counter, lamport, parents, operation_data, timestamp FROM operations ORDER BY timestamp"
         )?;
-        
+
         let rows = stmt.query_map([], |row| {
             let hash_bytes: Vec<u8> = row.get(0)?;
             let op_id_bytes: Vec<u8> = row.get(1)?;
@@ -206,17 +210,30 @@ impl Storage for SqliteStorage {
             // Convert bytes back to proper types
             let mut device_pubkey = [0u8; 32];
             device_pubkey.copy_from_slice(&device_pubkey_bytes[..32]);
-            
-            let op_id = crate::events::OpId::from_bytes(&op_id_bytes).map_err(|e| rusqlite::Error::InvalidParameterName(format!("OpId deserialization error: {}", e)))?;
-            let parents: Vec<crate::events::OpHash> = bincode::deserialize(&parents_bytes).map_err(|e| rusqlite::Error::InvalidParameterName(format!("Deserialization error: {}", e)))?;
-            let operation: crate::events::Operation = bincode::deserialize(&operation_data).map_err(|e| rusqlite::Error::InvalidParameterName(format!("Operation deserialization error: {}", e)))?;
+
+            let op_id = crate::events::OpId::from_bytes(&op_id_bytes).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("OpId deserialization error: {}", e))
+            })?;
+            let parents: Vec<crate::events::OpHash> = bincode::deserialize(&parents_bytes)
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!("Deserialization error: {}", e))
+                })?;
+            let operation: crate::events::Operation = bincode::deserialize(&operation_data)
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Operation deserialization error: {}",
+                        e
+                    ))
+                })?;
 
             Ok(Op {
                 id: op_id,
                 lamport,
                 parents,
                 operation,
-                timestamp: chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                timestamp: chrono::DateTime::from_timestamp(timestamp, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
             })
         })?;
 
@@ -233,7 +250,7 @@ impl Storage for SqliteStorage {
         let mut stmt = db.prepare(
             "SELECT hash, op_id, device_pubkey, counter, lamport, parents, operation_data, timestamp FROM operations WHERE device_pubkey = ? ORDER BY timestamp"
         )?;
-        
+
         let rows = stmt.query_map(params![device_id.as_slice()], |row| {
             let hash_bytes: Vec<u8> = row.get(0)?;
             let op_id_bytes: Vec<u8> = row.get(1)?;
@@ -247,17 +264,30 @@ impl Storage for SqliteStorage {
             // Convert bytes back to proper types
             let mut device_pubkey = [0u8; 32];
             device_pubkey.copy_from_slice(&device_pubkey_bytes[..32]);
-            
-            let op_id = crate::events::OpId::from_bytes(&op_id_bytes).map_err(|e| rusqlite::Error::InvalidParameterName(format!("OpId deserialization error: {}", e)))?;
-            let parents: Vec<crate::events::OpHash> = bincode::deserialize(&parents_bytes).map_err(|e| rusqlite::Error::InvalidParameterName(format!("Deserialization error: {}", e)))?;
-            let operation: crate::events::Operation = bincode::deserialize(&operation_data).map_err(|e| rusqlite::Error::InvalidParameterName(format!("Operation deserialization error: {}", e)))?;
+
+            let op_id = crate::events::OpId::from_bytes(&op_id_bytes).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("OpId deserialization error: {}", e))
+            })?;
+            let parents: Vec<crate::events::OpHash> = bincode::deserialize(&parents_bytes)
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!("Deserialization error: {}", e))
+                })?;
+            let operation: crate::events::Operation = bincode::deserialize(&operation_data)
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Operation deserialization error: {}",
+                        e
+                    ))
+                })?;
 
             Ok(Op {
                 id: op_id,
                 lamport,
                 parents,
                 operation,
-                timestamp: chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                timestamp: chrono::DateTime::from_timestamp(timestamp, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
             })
         })?;
 
@@ -294,7 +324,7 @@ impl Storage for SqliteStorage {
         let mut stmt = db.prepare(
             "SELECT id, content, created_at, is_deleted, is_purged FROM messages WHERE is_deleted = 0 ORDER BY created_at"
         )?;
-        
+
         let rows = stmt.query_map([], |row| {
             let id_bytes: Vec<u8> = row.get(0)?;
             let content: String = row.get(1)?;
@@ -327,9 +357,9 @@ impl Storage for SqliteStorage {
     async fn get_message(&self, message_id: &MessageId) -> Result<Option<Message>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
-            "SELECT id, content, created_at, is_deleted, is_purged FROM messages WHERE id = ?"
+            "SELECT id, content, created_at, is_deleted, is_purged FROM messages WHERE id = ?",
         )?;
-        
+
         let mut rows = stmt.query_map(params![message_id.0.as_slice()], |row| {
             let id_bytes: Vec<u8> = row.get(0)?;
             let content: String = row.get(1)?;
@@ -395,7 +425,7 @@ impl Storage for SqliteStorage {
         // Count chunks and calculate total size
         let mut chunk_count = 0;
         let mut total_size = 0u64;
-        
+
         for entry in WalkDir::new(&self.chunks_path) {
             let entry = entry?;
             if entry.file_type().is_file() {

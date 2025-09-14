@@ -8,13 +8,16 @@
 //! - Argon2id for passphrase-based key protection
 
 use crate::error::{Error, Result};
-use chacha20poly1305::{XChaCha20Poly1305, Key, aead::{Aead, KeyInit}};
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use blake3::Hasher;
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    Key, XChaCha20Poly1305,
+};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
+use rand::{rngs::OsRng, RngCore};
 use sha2::Sha256;
-use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
-use rand::{RngCore, rngs::OsRng};
 
 /// 32-byte vault key for encrypting event payloads and chunk keys
 pub type VaultKey = [u8; 32];
@@ -67,7 +70,8 @@ impl AccountKey {
 
     /// Verify a signature with the account key
     pub fn verify(&self, data: &[u8], signature: &Signature) -> Result<()> {
-        self.verifying_key.verify(data, signature)
+        self.verifying_key
+            .verify(data, signature)
             .map_err(|e| Error::Crypto(format!("Signature verification failed: {}", e)))
     }
 }
@@ -117,7 +121,8 @@ impl DeviceKey {
 
     /// Verify a signature with the device key
     pub fn verify(&self, data: &[u8], signature: &Signature) -> Result<()> {
-        self.verifying_key.verify(data, signature)
+        self.verifying_key
+            .verify(data, signature)
             .map_err(|e| Error::Crypto(format!("Signature verification failed: {}", e)))
     }
 }
@@ -143,7 +148,7 @@ impl DeviceCert {
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Self> {
         let issued_at = chrono::Utc::now();
-        
+
         // Create the data to be signed
         let mut data = Vec::new();
         data.extend_from_slice(&device_pubkey);
@@ -151,9 +156,9 @@ impl DeviceCert {
         if let Some(expires) = expires_at {
             data.extend_from_slice(&expires.timestamp().to_le_bytes());
         }
-        
+
         let signature = account_key.sign(&data);
-        
+
         Ok(Self {
             device_pubkey,
             issued_at,
@@ -171,14 +176,14 @@ impl DeviceCert {
         if let Some(expires) = self.expires_at {
             data.extend_from_slice(&expires.timestamp().to_le_bytes());
         }
-        
+
         if self.signature.len() != 64 {
             return Err(Error::Crypto("Invalid signature length".to_string()));
         }
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&self.signature[..]);
         let signature = Signature::from_bytes(&sig_bytes);
-        
+
         account_key.verify(&data, &signature)
     }
 }
@@ -222,14 +227,16 @@ pub fn derive_chunk_key(vault_key: &VaultKey, plaintext_hash: &[u8]) -> Result<[
 /// Encrypt data with XChaCha20-Poly1305
 pub fn encrypt(key: &[u8; 32], nonce: &NonceBytes, plaintext: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    cipher.encrypt(nonce.into(), plaintext)
+    cipher
+        .encrypt(nonce.into(), plaintext)
         .map_err(|e| Error::Crypto(format!("Encryption failed: {}", e)))
 }
 
 /// Decrypt data with XChaCha20-Poly1305
 pub fn decrypt(key: &[u8; 32], nonce: &NonceBytes, ciphertext: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    cipher.decrypt(nonce.into(), ciphertext)
+    cipher
+        .decrypt(nonce.into(), ciphertext)
         .map_err(|e| Error::Crypto(format!("Decryption failed: {}", e)))
 }
 
@@ -241,17 +248,16 @@ pub fn blake3_hash(data: &[u8]) -> [u8; 32] {
 }
 
 /// Protect a vault key with a passphrase using Argon2id
-pub fn protect_vault_key_with_passphrase(
-    vault_key: &VaultKey,
-    passphrase: &str,
-) -> Result<String> {
+pub fn protect_vault_key_with_passphrase(vault_key: &VaultKey, passphrase: &str) -> Result<String> {
     let salt = generate_nonce(); // Use 24 bytes for salt
     let argon2 = Argon2::default();
-    
-    let salt_string = SaltString::encode_b64(&salt).map_err(|e| Error::Crypto(format!("Salt encoding failed: {}", e)))?;
-    let password_hash = argon2.hash_password(passphrase.as_bytes(), &salt_string)
+
+    let salt_string = SaltString::encode_b64(&salt)
+        .map_err(|e| Error::Crypto(format!("Salt encoding failed: {}", e)))?;
+    let password_hash = argon2
+        .hash_password(passphrase.as_bytes(), &salt_string)
         .map_err(|e| Error::Crypto(format!("Argon2 hashing failed: {}", e)))?;
-    
+
     // Encrypt the vault key with the derived key
     let hash = password_hash.hash.unwrap();
     let derived_key = hash.as_bytes();
@@ -262,37 +268,36 @@ pub fn protect_vault_key_with_passphrase(
     key_bytes.copy_from_slice(derived_key);
     let nonce = generate_nonce();
     let encrypted_key = encrypt(&key_bytes, &nonce, vault_key)?;
-    
+
     // Combine salt, nonce, and encrypted key
     let mut result = Vec::new();
     result.extend_from_slice(&salt);
     result.extend_from_slice(&nonce);
     result.extend_from_slice(&encrypted_key);
-    
+
     Ok(base64::encode(result))
 }
 
 /// Recover a vault key from a passphrase-protected string
-pub fn recover_vault_key_from_passphrase(
-    protected: &str,
-    passphrase: &str,
-) -> Result<VaultKey> {
+pub fn recover_vault_key_from_passphrase(protected: &str, passphrase: &str) -> Result<VaultKey> {
     let data = base64::decode(protected)
         .map_err(|e| Error::Crypto(format!("Base64 decode failed: {}", e)))?;
-    
+
     if data.len() < 24 + 24 + 32 {
         return Err(Error::Crypto("Invalid protected key format".to_string()));
     }
-    
+
     let salt = &data[0..24];
     let nonce = &data[24..48];
     let encrypted_key = &data[48..];
-    
+
     let argon2 = Argon2::default();
-    let salt_string = SaltString::encode_b64(salt).map_err(|e| Error::Crypto(format!("Salt encoding failed: {}", e)))?;
-    let password_hash = argon2.hash_password(passphrase.as_bytes(), &salt_string)
+    let salt_string = SaltString::encode_b64(salt)
+        .map_err(|e| Error::Crypto(format!("Salt encoding failed: {}", e)))?;
+    let password_hash = argon2
+        .hash_password(passphrase.as_bytes(), &salt_string)
         .map_err(|e| Error::Crypto(format!("Argon2 hashing failed: {}", e)))?;
-    
+
     let hash = password_hash.hash.unwrap();
     let derived_key = hash.as_bytes();
     if derived_key.len() != 32 {
@@ -301,11 +306,11 @@ pub fn recover_vault_key_from_passphrase(
     let mut key_bytes = [0u8; 32];
     key_bytes.copy_from_slice(derived_key);
     let decrypted_key = decrypt(&key_bytes, nonce.try_into().unwrap(), encrypted_key)?;
-    
+
     if decrypted_key.len() != 32 {
         return Err(Error::Crypto("Invalid decrypted key length".to_string()));
     }
-    
+
     let mut vault_key = [0u8; 32];
     vault_key.copy_from_slice(&decrypted_key);
     Ok(vault_key)
@@ -320,7 +325,7 @@ mod tests {
         let account_key = AccountKey::generate();
         let device_key = DeviceKey::generate();
         let vault_key = generate_vault_key();
-        
+
         assert_eq!(account_key.public_key_bytes().len(), 32);
         assert_eq!(device_key.public_key_bytes().len(), 32);
         assert_eq!(vault_key.len(), 32);
@@ -331,10 +336,10 @@ mod tests {
         let key = generate_vault_key();
         let nonce = generate_nonce();
         let plaintext = b"Hello, SAVED!";
-        
+
         let ciphertext = encrypt(&key, &nonce, plaintext).unwrap();
         let decrypted = decrypt(&key, &nonce, &ciphertext).unwrap();
-        
+
         assert_eq!(plaintext, &decrypted[..]);
     }
 
@@ -342,10 +347,10 @@ mod tests {
     fn test_passphrase_protection() {
         let vault_key = generate_vault_key();
         let passphrase = "test-passphrase-123";
-        
+
         let protected = protect_vault_key_with_passphrase(&vault_key, passphrase).unwrap();
         let recovered = recover_vault_key_from_passphrase(&protected, passphrase).unwrap();
-        
+
         assert_eq!(vault_key, recovered);
     }
 
@@ -353,13 +358,9 @@ mod tests {
     fn test_device_certificate() {
         let account_key = AccountKey::generate();
         let device_key = DeviceKey::generate();
-        
-        let cert = DeviceCert::new(
-            device_key.public_key_bytes(),
-            &account_key,
-            None,
-        ).unwrap();
-        
+
+        let cert = DeviceCert::new(device_key.public_key_bytes(), &account_key, None).unwrap();
+
         cert.verify(&account_key).unwrap();
     }
 }

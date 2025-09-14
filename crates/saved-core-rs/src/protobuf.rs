@@ -244,13 +244,13 @@ pub struct OnboardingToken {
 pub mod protocol {
     /// Gossipsub topic for head announcements
     pub const HEADS_TOPIC: &str = "/savedmsgs/{account_id}/heads";
-    
+
     /// Request-response protocol for operations
     pub const OPS_PROTOCOL: &str = "/savedmsgs/1/ops";
-    
+
     /// Request-response protocol for chunks
     pub const CHUNKS_PROTOCOL: &str = "/savedmsgs/1/chunks";
-    
+
     /// Request-response protocol for device linking
     pub const LINKING_PROTOCOL: &str = "/savedmsgs/1/linking";
 }
@@ -268,10 +268,10 @@ mod tests {
             signer: vec![9, 10, 11, 12],
             sig: vec![13, 14, 15, 16],
         };
-        
+
         let encoded = header.encode_to_vec();
         let decoded = OpHeader::decode(&encoded[..]).unwrap();
-        
+
         assert_eq!(header, decoded);
     }
 
@@ -284,10 +284,10 @@ mod tests {
             att_cids: vec![vec![5, 6, 7, 8]],
             created_at_ms: 1234567890,
         };
-        
+
         let encoded = body.encode_to_vec();
         let decoded = CreateMessageBody::decode(&encoded[..]).unwrap();
-        
+
         assert_eq!(body, decoded);
     }
 }

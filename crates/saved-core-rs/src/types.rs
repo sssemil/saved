@@ -1,12 +1,11 @@
 //! Core types for the SAVED library
 
+use crate::crypto;
+use crate::storage::{MemoryStorage, SqliteStorage, Storage, StorageBackend};
+use crate::sync;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
-use url::Url;
-use crate::storage::{Storage, StorageBackend, SqliteStorage, MemoryStorage};
-use crate::sync;
-use crate::crypto;
 
 /// Unique identifier for a message
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -151,15 +150,21 @@ impl AccountHandle {
                 Box::new(memory_storage)
             }
         };
-        
+
         // Create event channel
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         // Create sync manager
         let vault_key = crypto::generate_vault_key();
         let device_key = crypto::DeviceKey::generate();
-        let sync_manager = sync::SyncManager::new(storage, config.storage_path.clone(), vault_key, device_key, event_sender.clone());
-        
+        let sync_manager = sync::SyncManager::new(
+            storage,
+            config.storage_path.clone(),
+            vault_key,
+            device_key,
+            event_sender.clone(),
+        );
+
         Ok(Self {
             sync_manager,
             event_sender,
@@ -198,7 +203,11 @@ impl AccountHandle {
     }
 
     /// Create a new message
-    pub async fn create_message(&mut self, body: String, attachments: Vec<PathBuf>) -> crate::Result<MessageId> {
+    pub async fn create_message(
+        &mut self,
+        body: String,
+        attachments: Vec<PathBuf>,
+    ) -> crate::Result<MessageId> {
         let message_id = self.sync_manager.create_message(body, attachments).await?;
         self.event_sender.send(Event::MessageReceived(message_id))?;
         Ok(message_id)
@@ -243,18 +252,6 @@ impl AccountHandle {
         // TODO: Implement forced announcement
     }
 
-    /// Enable cloud backup (optional feature)
-    pub async fn enable_cloud_backup(&self, _endpoint: Url, _token: String) -> crate::Result<()> {
-        // TODO: Implement cloud backup
-        Ok(())
-    }
-
-    /// Disable cloud backup
-    pub async fn disable_cloud_backup(&self) -> crate::Result<()> {
-        // TODO: Implement cloud backup disable
-        Ok(())
-    }
-
     /// List all messages (for testing)
     pub async fn list_messages(&self) -> crate::Result<Vec<Message>> {
         // Use the same storage instance that the sync manager is using
@@ -265,5 +262,4 @@ impl AccountHandle {
     pub fn sync_manager_mut(&mut self) -> &mut sync::SyncManager {
         &mut self.sync_manager
     }
-
 }

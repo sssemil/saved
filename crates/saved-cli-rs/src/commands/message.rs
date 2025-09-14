@@ -36,12 +36,17 @@ pub async fn create_command(
 
     // Open account
     let mut account = create_or_open_account(config).await?;
-    
+
     // Create message
-    let message_id = account.create_message(content.to_string(), attachments).await?;
-    
+    let message_id = account
+        .create_message(content.to_string(), attachments)
+        .await?;
+
     println!("{}", "✓ Message created successfully!".green().bold());
-    println!("Message ID: {}", hex::encode(message_id.as_bytes()).bright_blue());
+    println!(
+        "Message ID: {}",
+        hex::encode(message_id.as_bytes()).bright_blue()
+    );
     println!("Content: {}", content.bright_blue());
 
     Ok(())
@@ -73,7 +78,7 @@ pub async fn list_command(
 
     // Open account
     let account = create_or_open_account(config).await?;
-    
+
     if ids_only {
         // For now, just show a placeholder since we don't have message storage implemented yet
         println!("{}", "Message IDs:".bright_blue().bold());
@@ -132,10 +137,10 @@ pub async fn edit_command(
 
     // Open account
     let mut account = create_or_open_account(config).await?;
-    
+
     // Edit message
     account.edit_message(msg_id, content.to_string()).await?;
-    
+
     println!("{}", "✓ Message edited successfully!".green().bold());
     println!("Message ID: {}", message_id.bright_blue());
     println!("New content: {}", content.bright_blue());
@@ -174,7 +179,7 @@ pub async fn delete_command(
 
     // Open account
     let mut account = create_or_open_account(config).await?;
-    
+
     if permanent {
         account.purge_message(msg_id).await?;
         println!("{}", "✓ Message permanently deleted!".green().bold());
@@ -182,18 +187,14 @@ pub async fn delete_command(
         account.delete_message(msg_id).await?;
         println!("{}", "✓ Message deleted!".green().bold());
     }
-    
+
     println!("Message ID: {}", message_id.bright_blue());
 
     Ok(())
 }
 
 /// Show message content
-pub async fn show_command(
-    account_path: &PathBuf,
-    message_id: &str,
-    verbose: bool,
-) -> Result<()> {
+pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: bool) -> Result<()> {
     if verbose {
         println!("Showing message...");
         println!("Message ID: {}", message_id);
@@ -205,22 +206,26 @@ pub async fn show_command(
     // For now, just show a placeholder since we don't have message storage implemented yet
     println!("{}", "Message Details:".bright_blue().bold());
     println!("Message ID: {}", message_id.bright_blue());
-    println!("Content: {}", "(Message storage not yet implemented in core library)".yellow());
+    println!(
+        "Content: {}",
+        "(Message storage not yet implemented in core library)".yellow()
+    );
 
     Ok(())
 }
 
 /// Parse a hex-encoded message ID
 fn parse_message_id(hex_str: &str) -> Result<MessageId> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|_| anyhow::anyhow!("Invalid message ID format"))?;
-    
+    let bytes = hex::decode(hex_str).map_err(|_| anyhow::anyhow!("Invalid message ID format"))?;
+
     if bytes.len() != 32 {
-        return Err(anyhow::anyhow!("Message ID must be 32 bytes (64 hex characters)"));
+        return Err(anyhow::anyhow!(
+            "Message ID must be 32 bytes (64 hex characters)"
+        ));
     }
-    
+
     let mut msg_id_bytes = [0u8; 32];
     msg_id_bytes.copy_from_slice(&bytes);
-    
+
     Ok(MessageId::from_bytes(msg_id_bytes))
 }

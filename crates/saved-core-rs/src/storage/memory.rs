@@ -1,12 +1,12 @@
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use async_trait::async_trait;
 
-use crate::types::{MessageId, Message};
-use crate::events::Op;
-use crate::error::Result;
 use super::trait_impl::{Storage, StorageStats};
+use crate::error::Result;
+use crate::events::Op;
+use crate::types::{Message, MessageId};
 
 /// In-memory storage implementation
 pub struct MemoryStorage {
@@ -51,7 +51,8 @@ impl Storage for MemoryStorage {
 
     async fn get_device_operations(&self, device_id: &[u8; 32]) -> Result<Vec<Op>> {
         let ops = self.operations.read().await;
-        Ok(ops.iter()
+        Ok(ops
+            .iter()
             .filter(|op| op.id.device_pubkey == *device_id)
             .cloned()
             .collect())
@@ -76,7 +77,8 @@ impl Storage for MemoryStorage {
     async fn get_all_messages(&self) -> Result<Vec<Message>> {
         let messages = self.messages.read().await;
         // Filter out deleted messages
-        Ok(messages.values()
+        Ok(messages
+            .values()
             .filter(|msg| !msg.is_deleted)
             .cloned()
             .collect())
@@ -103,9 +105,9 @@ impl Storage for MemoryStorage {
         let ops = self.operations.read().await;
         let messages = self.messages.read().await;
         let chunks = self.chunks.read().await;
-        
+
         let total_size = chunks.values().map(|data| data.len() as u64).sum();
-        
+
         Ok(StorageStats {
             operation_count: ops.len(),
             message_count: messages.len(),

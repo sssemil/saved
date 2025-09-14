@@ -1,10 +1,10 @@
-pub mod sqlite;
 pub mod memory;
+pub mod sqlite;
 pub mod trait_impl;
 
-pub use trait_impl::Storage;
-pub use sqlite::SqliteStorage;
 pub use memory::MemoryStorage;
+pub use sqlite::SqliteStorage;
+pub use trait_impl::Storage;
 
 // Re-export types for convenience
 
