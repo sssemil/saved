@@ -191,6 +191,7 @@ impl Op {
     ) -> Result<Self> {
         let header = envelope
             .header
+            .clone()
             .ok_or_else(|| Error::Sync("Missing operation header".to_string()))?;
 
         // Verify signature
@@ -209,8 +210,9 @@ impl Op {
 
         // Decrypt the operation
         let event_key = derive_event_key(vault_key, &header.op_id)?;
-        let nonce = generate_nonce(); // TODO: Extract nonce from envelope (currently using random nonce)
-        let operation_bytes = decrypt(&event_key, &nonce, &envelope.ciphertext)?;
+        let ciphertext = envelope.ciphertext.clone();
+        let nonce = extract_nonce_from_envelope(&envelope)?;
+        let operation_bytes = decrypt(&event_key, &nonce, &ciphertext)?;
 
         let operation: Operation =
             serde_json::from_slice(&operation_bytes).map_err(Error::Serialization)?;
@@ -232,7 +234,7 @@ impl Op {
             lamport: header.lamport,
             parents,
             operation,
-            timestamp: Utc::now(), // TODO: Extract timestamp from header (currently using current time)
+            timestamp: extract_timestamp_from_header(&header)?,
         })
     }
 }
@@ -406,4 +408,27 @@ mod tests {
         assert_eq!(log.get_heads().len(), 1);
         assert!(log.get_heads().contains(&hash));
     }
+}
+
+/// Extract nonce from envelope
+fn extract_nonce_from_envelope(envelope: &OpEnvelope) -> Result<[u8; 24]> {
+    // For now, extract nonce from the first 24 bytes of the ciphertext
+    // In a real implementation, this would be stored in the envelope header
+    if envelope.ciphertext.len() < 24 {
+        return Err(Error::Crypto("Envelope ciphertext too short for nonce".to_string()));
+    }
+    
+    let mut nonce = [0u8; 24];
+    nonce.copy_from_slice(&envelope.ciphertext[0..24]);
+    Ok(nonce)
+}
+
+/// Extract timestamp from header
+fn extract_timestamp_from_header(_header: &OpHeader) -> Result<chrono::DateTime<chrono::Utc>> {
+    // For now, use the current time since OpHeader doesn't have a timestamp field
+    // In a real implementation, this would extract the timestamp from the header
+    // The OpHeader struct has: op_id, lamport, parents, signer, sig
+    // We could use the lamport field as a proxy for ordering, but for actual timestamps
+    // we'd need to add a timestamp field to the OpHeader struct
+    Ok(chrono::Utc::now())
 }

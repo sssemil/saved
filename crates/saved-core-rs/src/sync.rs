@@ -279,4 +279,9 @@ impl SyncManager {
     pub fn storage_mut(&mut self) -> &mut dyn Storage {
         self.storage.as_mut()
     }
+
+    /// Get event log reference
+    pub fn event_log(&self) -> &EventLog {
+        &self.event_log
+    }
 }

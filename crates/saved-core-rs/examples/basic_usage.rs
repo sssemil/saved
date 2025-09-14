@@ -103,6 +103,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::MessageDeleted(msg_id) => {
                 println!("Message deleted: {:?}", msg_id);
             }
+            Event::DeviceAuthorized(device_id) => {
+                println!("Device authorized: {}", device_id);
+            }
+            Event::DeviceRevoked(device_id) => {
+                println!("Device revoked: {}", device_id);
+            }
         }
     }
 
