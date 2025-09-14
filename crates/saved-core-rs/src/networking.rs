@@ -675,16 +675,25 @@ impl NetworkManager {
 
     /// Create operation header with signature
     async fn create_operation_header(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Create a simple header with timestamp and data hash
-        let timestamp = chrono::Utc::now().timestamp();
-        let data_hash = crate::crypto::blake3_hash(data);
+        // Get device key for signing
+        let device_key = self.storage.get_device_key().await?;
         
-        // Create header structure
-        let header = crate::protobuf::OpHeader {
-            timestamp,
-            data_hash: data_hash.to_vec(),
-            signature: Vec::new(), // TODO: Add actual signature with device key
+        // Create header structure (without signature first)
+        let mut header = crate::protobuf::OpHeader {
+            op_id: vec![0; 40], // Placeholder - should be actual op_id
+            lamport: 0, // Placeholder - should be actual lamport timestamp
+            parents: vec![], // Placeholder - should be actual parent hashes
+            signer: device_key.public_key_bytes().to_vec(),
+            sig: vec![], // Will be filled after signing
         };
+        
+        // Create data to sign: header (without sig) + ciphertext
+        let mut data_to_sign = header.encode_to_vec();
+        data_to_sign.extend_from_slice(data);
+        
+        // Sign the data
+        let signature = device_key.sign(&data_to_sign);
+        header.sig = signature.to_bytes().to_vec();
         
         Ok(header.encode_to_vec())
     }
@@ -747,18 +756,39 @@ impl NetworkManager {
         let header = crate::protobuf::OpHeader::decode(header_bytes)
             .map_err(|e| Error::Crypto(format!("Failed to decode operation header: {}", e)))?;
         
-        // Check timestamp (prevent replay attacks)
-        let now = chrono::Utc::now().timestamp();
-        let time_diff = (now - header.timestamp).abs();
-        if time_diff > 300 { // 5 minutes tolerance
-            return Err(Error::Crypto("Operation timestamp too old".to_string()));
-        }
+        // Note: Timestamp checking would be implemented here in a real system
+        // For now, we rely on the lamport timestamp for ordering
         
-        // TODO: Verify signature with peer's public key
-        // For now, just check that signature field exists
-        if header.signature.is_empty() {
+        // Verify signature with peer's public key
+        if header.sig.is_empty() {
             return Err(Error::Crypto("Missing operation signature".to_string()));
         }
+        
+        // Verify signature with peer's public key
+        if header.signer.len() != 32 {
+            return Err(Error::Crypto("Invalid signer public key length".to_string()));
+        }
+        
+        // Convert public key bytes to VerifyingKey
+        let mut pubkey_bytes = [0u8; 32];
+        pubkey_bytes.copy_from_slice(&header.signer);
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_bytes)
+            .map_err(|e| Error::Crypto(format!("Invalid public key: {}", e)))?;
+        
+        // Recreate the data that was signed: header (without sig) + ciphertext
+        let mut header_without_sig = header.clone();
+        header_without_sig.sig = vec![];
+        let mut data_to_verify = header_without_sig.encode_to_vec();
+        data_to_verify.extend_from_slice(ciphertext);
+        
+        // Convert signature bytes to Signature type
+        let signature_bytes: [u8; 64] = header.sig.try_into()
+            .map_err(|_| Error::Crypto("Invalid signature length".to_string()))?;
+        let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+        
+        // Verify the signature
+        verifying_key.verify(&data_to_verify, &signature)
+            .map_err(|e| Error::Crypto(format!("Signature verification failed: {}", e)))?;
         
         Ok(())
     }

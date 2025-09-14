@@ -193,6 +193,12 @@ impl Storage for MemoryStorage {
         Ok(cert.clone())
     }
 
+    async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
+        // For now, generate a new device key
+        // In a real implementation, this would be stored and retrieved from storage
+        Ok(crate::crypto::DeviceKey::generate())
+    }
+
     async fn get_stats(&self) -> Result<StorageStats> {
         let ops = self.operations.read().await;
         let messages = self.messages.read().await;

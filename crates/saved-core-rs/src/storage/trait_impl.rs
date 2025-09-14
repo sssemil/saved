@@ -81,6 +81,9 @@ pub trait Storage: Send + Sync {
     /// Get device certificate for this device
     async fn get_device_certificate(&self) -> Result<Option<crate::crypto::DeviceCert>>;
 
+    /// Get the device key for this device
+    async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey>;
+
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
 }

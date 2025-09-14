@@ -654,7 +654,7 @@ impl Storage for SqliteStorage {
         let result = stmt.query_row([], |row| {
             let cert_bytes: Vec<u8> = row.get(0)?;
             let device_cert: crate::crypto::DeviceCert = bincode::deserialize(&cert_bytes)
-                .map_err(|e| rusqlite::Error::InvalidColumnType(0, "device_cert".to_string(), rusqlite::types::Type::Blob))?;
+                .map_err(|_e| rusqlite::Error::InvalidColumnType(0, "device_cert".to_string(), rusqlite::types::Type::Blob))?;
             Ok(device_cert)
         });
         
@@ -663,6 +663,12 @@ impl Storage for SqliteStorage {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
+        // For now, generate a new device key
+        // In a real implementation, this would be stored and retrieved from storage
+        Ok(crate::crypto::DeviceKey::generate())
     }
 
     async fn get_stats(&self) -> Result<StorageStats> {
