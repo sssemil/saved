@@ -47,6 +47,9 @@ pub enum Error {
     #[error("Channel send error: {0}")]
     ChannelSend(#[from] std::sync::mpsc::SendError<crate::types::Event>),
 
+    #[error("Tokio channel send error: {0}")]
+    TokioChannelSend(#[from] tokio::sync::mpsc::error::SendError<crate::types::Event>),
+
     #[error("Walkdir error: {0}")]
     Walkdir(#[from] walkdir::Error),
 }

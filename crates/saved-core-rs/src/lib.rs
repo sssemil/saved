@@ -75,7 +75,7 @@ mod tests {
             max_parallel_chunks: 4,
         };
         
-        let account = AccountHandle::create_or_open(config).await?;
+        let account = AccountHandle::create_test_account(config).await?;
         Ok((account, temp_dir))
     }
 

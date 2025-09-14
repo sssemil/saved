@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use tokio::sync::mpsc;
 use url::Url;
-use crate::storage;
+use crate::storage::{Storage, StorageConfig, StorageBackend, SqliteStorage, MemoryStorage};
 use crate::sync;
 use crate::crypto;
 
@@ -128,17 +128,29 @@ pub struct QrPayload {
 /// Main account handle - the primary interface to the SAVED library
 pub struct AccountHandle {
     sync_manager: sync::SyncManager,
-    event_sender: mpsc::Sender<Event>,
+    event_sender: mpsc::UnboundedSender<Event>,
 }
 
 impl AccountHandle {
     /// Create a new account or open an existing one
     pub async fn create_or_open(config: Config) -> crate::Result<Self> {
-        // Create storage
-        let storage = storage::Storage::open(config.storage_path.clone())?;
+        // Create storage based on config
+        let storage_config = StorageConfig::sqlite(config.storage_path.clone());
+        let storage: Box<dyn Storage> = match storage_config.backend {
+            StorageBackend::Sqlite => {
+                let mut sqlite_storage = SqliteStorage::open(config.storage_path.clone())?;
+                sqlite_storage.init().await?;
+                Box::new(sqlite_storage)
+            }
+            StorageBackend::Memory => {
+                let mut memory_storage = MemoryStorage::new();
+                memory_storage.init().await?;
+                Box::new(memory_storage)
+            }
+        };
         
         // Create event channel
-        let (event_sender, _event_receiver) = mpsc::channel();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
         
         // Create sync manager
         let vault_key = crypto::generate_vault_key();
@@ -215,8 +227,8 @@ impl AccountHandle {
     }
 
     /// Subscribe to events from the account
-    pub async fn subscribe(&self) -> mpsc::Receiver<Event> {
-        let (sender, receiver) = mpsc::channel();
+    pub async fn subscribe(&self) -> mpsc::UnboundedReceiver<Event> {
+        let (sender, receiver) = mpsc::unbounded_channel();
         // TODO: Implement event subscription
         receiver
     }
@@ -242,12 +254,44 @@ impl AccountHandle {
     pub async fn list_messages(&self) -> crate::Result<Vec<Message>> {
         // For testing, we'll create a temporary storage instance
         // In a real implementation, this would be properly exposed
-        let storage = storage::Storage::open(self.sync_manager.storage_path.clone())?;
+        let storage_config = StorageConfig::sqlite(self.sync_manager.storage_path.clone());
+        let storage: Box<dyn Storage> = match storage_config.backend {
+            StorageBackend::Sqlite => {
+                let mut sqlite_storage = SqliteStorage::open(self.sync_manager.storage_path.clone())?;
+                sqlite_storage.init().await?;
+                Box::new(sqlite_storage)
+            }
+            StorageBackend::Memory => {
+                let mut memory_storage = MemoryStorage::new();
+                memory_storage.init().await?;
+                Box::new(memory_storage)
+            }
+        };
         storage.get_all_messages().await
     }
 
     /// Get sync manager (for testing)
     pub fn sync_manager_mut(&mut self) -> &mut sync::SyncManager {
         &mut self.sync_manager
+    }
+
+    /// Create a test account with in-memory storage
+    pub async fn create_test_account(config: Config) -> crate::Result<Self> {
+        // Create in-memory storage for testing
+        let mut storage = MemoryStorage::new();
+        storage.init().await?;
+        
+        // Create event channel with unbounded capacity for testing
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        
+        // Create sync manager
+        let vault_key = crypto::generate_vault_key();
+        let device_key = crypto::DeviceKey::generate();
+        let sync_manager = sync::SyncManager::new(Box::new(storage), config.storage_path.clone(), vault_key, device_key, event_sender.clone());
+        
+        Ok(Self {
+            sync_manager,
+            event_sender,
+        })
     }
 }

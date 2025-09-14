@@ -18,6 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create configuration
     let config = Config {
         storage_path: PathBuf::from("./example-account"),
+        network_port: 8080,
+        enable_mdns: true,
         allow_public_relays: false,
         bootstrap_multiaddrs: Vec::new(),
         use_kademlia: false,
@@ -27,14 +29,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Create or open account
     println!("Creating/opening account...");
-    let account = create_or_open_account(config).await?;
+    let mut account = create_or_open_account(config).await?;
     
     // Get device info
     let device_info = account.device_info().await;
     println!("Device info: {:?}", device_info);
     
     // Subscribe to events
-    let event_receiver = account.subscribe().await;
+    let mut event_receiver = account.subscribe().await;
     
     // Start network (this would normally be done in a separate task)
     println!("Starting network...");

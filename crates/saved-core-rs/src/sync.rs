@@ -5,16 +5,16 @@
 
 use crate::error::Result;
 use crate::events::{Op, OpHash, EventLog, Operation};
-use crate::storage::{Storage, ChunkId};
+use crate::storage::{Storage, sqlite::ChunkId};
 use crate::crypto::{VaultKey, DeviceKey, blake3_hash};
 use crate::types::{Event, MessageId};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use tokio::sync::mpsc;
 
 /// Sync manager for coordinating synchronization between devices
 pub struct SyncManager {
     /// Storage backend
-    storage: Storage,
+    storage: Box<dyn Storage>,
     /// Storage path (for testing)
     pub storage_path: PathBuf,
     /// Event log
@@ -24,17 +24,17 @@ pub struct SyncManager {
     /// Device key for signing
     device_key: DeviceKey,
     /// Event sender for notifications
-    event_sender: mpsc::Sender<Event>,
+    event_sender: mpsc::UnboundedSender<Event>,
 }
 
 impl SyncManager {
     /// Create a new sync manager
     pub fn new(
-        storage: Storage,
+        storage: Box<dyn Storage>,
         storage_path: PathBuf,
         vault_key: VaultKey,
         device_key: DeviceKey,
-        event_sender: mpsc::Sender<Event>,
+        event_sender: mpsc::UnboundedSender<Event>,
     ) -> Self {
         let event_log = EventLog::new();
         
@@ -131,7 +131,7 @@ impl SyncManager {
             let encrypted_chunk = crate::crypto::encrypt(&chunk_key, &nonce, chunk_data)?;
             
             // Store chunk
-            self.storage.store_chunk(chunk_id, &encrypted_chunk)?;
+            self.storage.store_chunk(&chunk_id, &encrypted_chunk).await?;
             
             chunk_cids.push(chunk_id);
             offset = end;
@@ -156,7 +156,7 @@ impl SyncManager {
         self.event_log.add_operation(op.clone())?;
         
         // Store in database
-        self.storage.store_operation(&op)?;
+        self.storage.store_operation(&op).await?;
         
         Ok(op_hash)
     }
