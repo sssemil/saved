@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::trait_impl::{Storage, StorageStats};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::events::Op;
 use crate::types::{Message, MessageId};
 
@@ -19,6 +19,7 @@ pub struct MemoryStorage {
     vault_key: Arc<RwLock<Option<Vec<u8>>>>,
     authorized_devices: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     device_certificate: Arc<RwLock<Option<crate::crypto::DeviceCert>>>,
+    device_key: Arc<RwLock<Option<Vec<u8>>>>,
 }
 
 impl MemoryStorage {
@@ -33,6 +34,7 @@ impl MemoryStorage {
             vault_key: Arc::new(RwLock::new(None)),
             authorized_devices: Arc::new(RwLock::new(HashMap::new())),
             device_certificate: Arc::new(RwLock::new(None)),
+            device_key: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -194,9 +196,46 @@ impl Storage for MemoryStorage {
     }
 
     async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
-        // For now, generate a new device key
-        // In a real implementation, this would be stored and retrieved from storage
-        Ok(crate::crypto::DeviceKey::generate())
+        // Retrieve the stored device key from memory storage
+        let device_key_data = self.device_key.read().await;
+        
+        if let Some(key_bytes) = device_key_data.as_ref() {
+            // Deserialize the stored device key from raw bytes
+            if key_bytes.len() == 32 {
+                // Old format - just signing key bytes
+                let mut signing_key_bytes = [0u8; 32];
+                signing_key_bytes.copy_from_slice(key_bytes);
+                let device_key = crate::crypto::DeviceKey::from_bytes(&signing_key_bytes)?;
+                Ok(device_key)
+            } else if key_bytes.len() == 64 {
+                // New format - both signing and verifying key bytes
+                let mut signing_key_bytes = [0u8; 32];
+                let mut verifying_key_bytes = [0u8; 32];
+                signing_key_bytes.copy_from_slice(&key_bytes[0..32]);
+                verifying_key_bytes.copy_from_slice(&key_bytes[32..64]);
+                
+                let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_key_bytes);
+                let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
+                    .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
+                
+                    Ok(crate::crypto::DeviceKey::from_keys(signing_key, verifying_key))
+            } else {
+                return Err(Error::Storage("Invalid device key length".to_string()));
+            }
+        } else {
+            // Generate a new device key if none exists
+            let new_device_key = crate::crypto::DeviceKey::generate();
+            
+            // Store the new device key as raw bytes (64 bytes: 32 signing + 32 verifying)
+            let mut key_bytes = Vec::new();
+            key_bytes.extend_from_slice(&new_device_key.private_key_bytes());
+            key_bytes.extend_from_slice(&new_device_key.public_key_bytes());
+            
+            let mut stored_key = self.device_key.write().await;
+            *stored_key = Some(key_bytes);
+            
+            Ok(new_device_key)
+        }
     }
 
     async fn get_stats(&self) -> Result<StorageStats> {

@@ -7,9 +7,8 @@ use crate::crypto::{blake3_hash, DeviceKey, VaultKey};
 use crate::error::Result;
 use crate::events::{EventLog, Op, OpHash, Operation};
 use crate::storage::{sqlite::ChunkId, Storage};
-use crate::types::{Event, MessageId};
+use crate::types::MessageId;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 
 /// Sync manager for coordinating synchronization between devices
 pub struct SyncManager {
@@ -23,8 +22,6 @@ pub struct SyncManager {
     vault_key: VaultKey,
     /// Device key for signing
     device_key: DeviceKey,
-    /// Event sender for notifications
-    event_sender: mpsc::UnboundedSender<Event>,
 }
 
 impl SyncManager {
@@ -34,7 +31,6 @@ impl SyncManager {
         storage_path: PathBuf,
         vault_key: VaultKey,
         device_key: DeviceKey,
-        event_sender: mpsc::UnboundedSender<Event>,
     ) -> Self {
         let event_log = EventLog::new();
 
@@ -44,7 +40,6 @@ impl SyncManager {
             event_log,
             vault_key,
             device_key,
-            event_sender,
         }
     }
 

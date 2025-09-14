@@ -4,6 +4,7 @@ use anyhow::Result;
 use colored::*;
 use saved_core_rs::{create_or_open_account, Config};
 use std::path::PathBuf;
+use crate::utils::formatting::{print_success, print_section_header};
 
 /// Initialize a new SAVED account
 pub async fn init_command(account_path: &PathBuf, name: &str, verbose: bool) -> Result<()> {
@@ -24,12 +25,13 @@ pub async fn init_command(account_path: &PathBuf, name: &str, verbose: bool) -> 
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Create account
     let account = create_or_open_account(config).await?;
 
-    println!("{}", "✓ Account created successfully!".green().bold());
+    print_success("Account created successfully!");
     println!("Account name: {}", name.bright_blue());
     println!(
         "Storage path: {}",
@@ -66,6 +68,7 @@ pub async fn info_command(account_path: &PathBuf, verbose: bool) -> Result<()> {
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -74,8 +77,7 @@ pub async fn info_command(account_path: &PathBuf, verbose: bool) -> Result<()> {
     // Get device info
     let device_info = account.device_info().await;
 
-    println!("{}", "SAVED Account Information".bright_blue().bold());
-    println!("{}", "=".repeat(25).bright_blue());
+    print_section_header("SAVED Account Information");
     println!(
         "Storage path: {}",
         account_path.display().to_string().bright_blue()

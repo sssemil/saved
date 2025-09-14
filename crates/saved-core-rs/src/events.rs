@@ -167,6 +167,7 @@ impl Op {
             signer: device_key.public_key_bytes().to_vec(),
             sig: Vec::new(), // Will be filled after signing
             timestamp: chrono::Utc::now().timestamp(),
+            nonce: nonce.to_vec(),
         };
 
         // Sign the header and ciphertext
@@ -212,7 +213,14 @@ impl Op {
         // Decrypt the operation
         let event_key = derive_event_key(vault_key, &header.op_id)?;
         let ciphertext = envelope.ciphertext.clone();
-        let nonce = extract_nonce_from_envelope(&envelope)?;
+        
+        // Extract nonce from header
+        if header.nonce.len() != 24 {
+            return Err(Error::Crypto("Invalid nonce length in header".to_string()));
+        }
+        let mut nonce = [0u8; 24];
+        nonce.copy_from_slice(&header.nonce);
+        
         let operation_bytes = decrypt(&event_key, &nonce, &ciphertext)?;
 
         let operation: Operation =
@@ -411,18 +419,6 @@ mod tests {
     }
 }
 
-/// Extract nonce from envelope
-fn extract_nonce_from_envelope(envelope: &OpEnvelope) -> Result<[u8; 24]> {
-    // For now, extract nonce from the first 24 bytes of the ciphertext
-    // In a real implementation, this would be stored in the envelope header
-    if envelope.ciphertext.len() < 24 {
-        return Err(Error::Crypto("Envelope ciphertext too short for nonce".to_string()));
-    }
-    
-    let mut nonce = [0u8; 24];
-    nonce.copy_from_slice(&envelope.ciphertext[0..24]);
-    Ok(nonce)
-}
 
 /// Extract timestamp from header
 fn extract_timestamp_from_header(header: &OpHeader) -> Result<chrono::DateTime<chrono::Utc>> {

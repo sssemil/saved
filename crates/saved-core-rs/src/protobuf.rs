@@ -24,6 +24,9 @@ pub struct OpHeader {
     /// Unix timestamp when operation was created
     #[prost(int64, tag = "6")]
     pub timestamp: i64,
+    /// 24-byte nonce for encryption
+    #[prost(bytes, tag = "7")]
+    pub nonce: Vec<u8>,
 }
 
 /// Create message operation body
@@ -271,6 +274,7 @@ mod tests {
             signer: vec![9, 10, 11, 12],
             sig: vec![13, 14, 15, 16],
             timestamp: 1234567890,
+            nonce: vec![17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
         };
 
         let encoded = header.encode_to_vec();
@@ -400,6 +404,7 @@ mod tests {
             signer: vec![9, 10, 11, 12],
             sig: vec![13, 14, 15, 16],
             timestamp: 1234567890,
+            nonce: vec![17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
         };
 
         let envelope = OpEnvelope {
@@ -449,6 +454,7 @@ mod tests {
             signer: vec![9, 10, 11, 12],
             sig: vec![13, 14, 15, 16],
             timestamp: 1234567890,
+            nonce: vec![17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
         };
 
         let envelope = OpEnvelope {
@@ -553,6 +559,7 @@ mod tests {
             signer: vec![],
             sig: vec![],
             timestamp: 0,
+            nonce: vec![],
         };
 
         let encoded = header.encode_to_vec();

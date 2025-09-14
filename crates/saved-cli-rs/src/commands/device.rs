@@ -5,6 +5,7 @@ use colored::*;
 use qrcode::QrCode;
 use saved_core_rs::{create_or_open_account, Config, QrPayload};
 use std::path::PathBuf;
+use crate::utils::formatting::{print_success, print_section_header};
 
 /// Generate QR code for device linking
 pub async fn link_command(
@@ -27,13 +28,14 @@ pub async fn link_command(
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
     let account = create_or_open_account(config).await?;
 
     // Generate QR payload
-    let qr_payload = account.make_linking_qr();
+    let qr_payload = account.make_linking_qr().await?;
 
     // Serialize to JSON
     let json_payload = serde_json::to_string_pretty(&qr_payload)?;
@@ -50,19 +52,73 @@ pub async fn link_command(
         .module_dimensions(2, 1)
         .build();
 
-    println!("{}", "Device Linking QR Code:".bright_blue().bold());
-    println!("{}", "=".repeat(25).bright_blue());
+    print_section_header("Device Linking QR Code:");
     println!("{}", string);
 
     // Save to file if requested
     if let Some(output_path) = output {
-        // For now, just save the JSON payload to a text file
-        std::fs::write(&output_path, &json_payload)?;
-        println!(
-            "QR payload saved to: {}",
-            output_path.display().to_string().bright_blue()
-        );
-        println!("Note: Image generation not yet implemented. Saved JSON payload instead.");
+        // Implement proper device export with multiple formats
+        let extension = output_path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("txt");
+        
+        match extension.to_lowercase().as_str() {
+            "json" => {
+                // Save as JSON payload
+                std::fs::write(&output_path, &json_payload)?;
+                println!(
+                    "QR payload saved to: {}",
+                    output_path.display().to_string().bright_blue()
+                );
+            },
+            "txt" => {
+                // Save as formatted text file
+                let mut content = String::new();
+                content.push_str("SAVED Device Linking Information\n");
+                content.push_str("================================\n\n");
+                content.push_str("QR Code:\n");
+                content.push_str(&string);
+                content.push_str("\n\nJSON Payload:\n");
+                content.push_str(&json_payload);
+                content.push_str("\n\nInstructions:\n");
+                content.push_str("1. Open SAVED on another device\n");
+                content.push_str("2. Scan this QR code with the 'saved accept' command\n");
+                content.push_str("3. The devices will be linked and can sync messages\n");
+                
+                std::fs::write(&output_path, content)?;
+                println!(
+                    "Device export saved to: {}",
+                    output_path.display().to_string().bright_blue()
+                );
+            },
+            "svg" => {
+                // Generate SVG QR code (simplified)
+                let qr = QrCode::new(&json_payload)?;
+                let svg = qr.render::<qrcode::render::svg::Color>().build();
+                
+                std::fs::write(&output_path, svg)?;
+                println!(
+                    "SVG QR code saved to: {}",
+                    output_path.display().to_string().bright_blue()
+                );
+            },
+            _ => {
+                // Default to text format
+                let mut content = String::new();
+                content.push_str("SAVED Device Linking Information\n");
+                content.push_str("================================\n\n");
+                content.push_str("QR Code:\n");
+                content.push_str(&string);
+                content.push_str("\n\nJSON Payload:\n");
+                content.push_str(&json_payload);
+                
+                std::fs::write(&output_path, content)?;
+                println!(
+                    "Device export saved to: {}",
+                    output_path.display().to_string().bright_blue()
+                );
+            }
+        }
     }
 
     println!("\n{}", "Instructions:".yellow().bold());
@@ -100,6 +156,7 @@ pub async fn accept_command(account_path: &PathBuf, payload: &str, verbose: bool
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -108,7 +165,7 @@ pub async fn accept_command(account_path: &PathBuf, payload: &str, verbose: bool
     // Accept the link
     let device_info = account.accept_link(qr_payload).await?;
 
-    println!("{}", "✓ Device linked successfully!".green().bold());
+    print_success("Device linked successfully!");
     println!("Device ID: {}", device_info.device_id.bright_blue());
     println!("Device name: {}", device_info.device_name.bright_blue());
     println!(
@@ -144,6 +201,7 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -152,8 +210,7 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     // Get device info
     let device_info = account.device_info().await;
 
-    println!("{}", "Connected Devices:".bright_blue().bold());
-    println!("{}", "=".repeat(20).bright_blue());
+    print_section_header("Connected Devices:");
 
     // Show local device
     println!("• {} (Local)", device_info.device_name.bright_green());

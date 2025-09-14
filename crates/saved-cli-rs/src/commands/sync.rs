@@ -4,6 +4,7 @@ use anyhow::Result;
 use colored::*;
 use saved_core_rs::{create_or_open_account, Config};
 use std::path::PathBuf;
+use crate::utils::formatting::{print_success, print_section_header};
 
 /// Start network sync
 pub async fn sync_command(account_path: &PathBuf, daemon: bool, verbose: bool) -> Result<()> {
@@ -23,15 +24,16 @@ pub async fn sync_command(account_path: &PathBuf, daemon: bool, verbose: bool) -
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
-    let account = create_or_open_account(config).await?;
+    let mut account = create_or_open_account(config).await?;
 
     // Start network
     account.start_network().await?;
 
-    println!("{}", "✓ Network started successfully!".green().bold());
+    print_success("Network started successfully!");
     println!("Listening for connections and syncing messages...");
 
     if daemon {
@@ -71,6 +73,7 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -79,8 +82,7 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
     // Get device info
     let device_info = account.device_info().await;
 
-    println!("{}", "SAVED Sync Status".bright_blue().bold());
-    println!("{}", "=".repeat(18).bright_blue());
+    print_section_header("SAVED Sync Status");
 
     // Device status
     println!("Device: {}", device_info.device_name.bright_blue());
@@ -123,41 +125,3 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
     Ok(())
 }
 
-/// Handle sync events
-fn handle_event(event: saved_core_rs::Event) {
-    match event {
-        saved_core_rs::Event::Connected(device_info) => {
-            println!(
-                "{}",
-                format!("✓ Device connected: {}", device_info.device_name).green()
-            );
-        }
-        saved_core_rs::Event::Disconnected(device_id) => {
-            println!("{}", format!("✗ Device disconnected: {}", device_id).red());
-        }
-        saved_core_rs::Event::HeadsUpdated => {
-            println!("{}", "📡 Heads updated - sync in progress".blue());
-        }
-        saved_core_rs::Event::SyncProgress { done, total } => {
-            println!("{}", format!("📊 Sync progress: {}/{}", done, total).blue());
-        }
-        saved_core_rs::Event::MessageReceived(msg_id) => {
-            println!(
-                "{}",
-                format!("📨 Message received: {}", hex::encode(msg_id.as_bytes())).green()
-            );
-        }
-        saved_core_rs::Event::MessageEdited(msg_id) => {
-            println!(
-                "{}",
-                format!("✏️  Message edited: {}", hex::encode(msg_id.as_bytes())).yellow()
-            );
-        }
-        saved_core_rs::Event::MessageDeleted(msg_id) => {
-            println!(
-                "{}",
-                format!("🗑️  Message deleted: {}", hex::encode(msg_id.as_bytes())).red()
-            );
-        }
-    }
-}

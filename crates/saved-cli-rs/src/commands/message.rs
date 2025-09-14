@@ -5,6 +5,8 @@ use colored::*;
 use comfy_table::{Cell, Table};
 use saved_core_rs::{create_or_open_account, Config, MessageId};
 use std::path::PathBuf;
+use crate::utils::formatting::{format_message_id, format_short_message_id, format_file_size};
+use crate::utils::validation::{validate_message_content, validate_message_id, validate_attachment};
 
 /// Create a new message
 pub async fn create_command(
@@ -17,8 +19,23 @@ pub async fn create_command(
         println!("Creating new message...");
         println!("Content: {}", content);
         if !attachments.is_empty() {
-            println!("Attachments: {:?}", attachments);
+            println!("Attachments:");
+            for attachment in &attachments {
+                if let Ok(metadata) = std::fs::metadata(attachment) {
+                    println!("  • {} ({})", attachment.display(), format_file_size(metadata.len()));
+                } else {
+                    println!("  • {} (size unknown)", attachment.display());
+                }
+            }
         }
+    }
+
+    // Validate message content
+    validate_message_content(content)?;
+    
+    // Validate attachments
+    for attachment in &attachments {
+        validate_attachment(attachment)?;
     }
 
     // Create configuration
@@ -32,6 +49,7 @@ pub async fn create_command(
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -56,7 +74,7 @@ pub async fn create_command(
 pub async fn list_command(
     account_path: &PathBuf,
     ids_only: bool,
-    limit: Option<usize>,
+    _limit: Option<usize>,
     verbose: bool,
 ) -> Result<()> {
     if verbose {
@@ -74,15 +92,26 @@ pub async fn list_command(
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
     let account = create_or_open_account(config).await?;
 
+    // Get messages from the account
+    let messages = account.list_messages().await
+        .map_err(|e| anyhow::anyhow!("Failed to list messages: {}", e))?;
+
+    if messages.is_empty() {
+        println!("{}", "No messages found.".yellow());
+        return Ok(());
+    }
+
     if ids_only {
-        // For now, just show a placeholder since we don't have message storage implemented yet
         println!("{}", "Message IDs:".bright_blue().bold());
-        println!("(Message storage not yet implemented in core library)");
+        for message in messages {
+            println!("{}", format_short_message_id(&message.id.0).bright_blue());
+        }
     } else {
         // Create a table for better formatting
         let mut table = Table::new();
@@ -90,14 +119,31 @@ pub async fn list_command(
             Cell::new("Message ID").add_attribute(comfy_table::Attribute::Bold),
             Cell::new("Content").add_attribute(comfy_table::Attribute::Bold),
             Cell::new("Created").add_attribute(comfy_table::Attribute::Bold),
+            Cell::new("Status").add_attribute(comfy_table::Attribute::Bold),
         ]);
 
-        // For now, show placeholder data
-        table.add_row(vec![
-            Cell::new("(not implemented)"),
-            Cell::new("Message storage not yet implemented in core library"),
-            Cell::new("N/A"),
-        ]);
+        for message in messages {
+            let content_preview = if message.content.len() > 50 {
+                format!("{}...", &message.content[..50])
+            } else {
+                message.content.clone()
+            };
+            
+            let status = if message.is_purged {
+                "Purged".red()
+            } else if message.is_deleted {
+                "Deleted".yellow()
+            } else {
+                "Active".green()
+            };
+            
+            table.add_row(vec![
+                Cell::new(format_short_message_id(&message.id.0)),
+                Cell::new(content_preview),
+                Cell::new(message.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+                Cell::new(status),
+            ]);
+        }
 
         println!("{}", "Messages:".bright_blue().bold());
         println!("{}", table);
@@ -119,6 +165,9 @@ pub async fn edit_command(
         println!("New content: {}", content);
     }
 
+    // Validate message content
+    validate_message_content(content)?;
+
     // Parse message ID
     let msg_id = parse_message_id(message_id)?;
 
@@ -133,6 +182,7 @@ pub async fn edit_command(
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -175,6 +225,7 @@ pub async fn delete_command(
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
     };
 
     // Open account
@@ -201,29 +252,59 @@ pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: boo
     }
 
     // Parse message ID
-    let _msg_id = parse_message_id(message_id)?;
+    let msg_id = parse_message_id(message_id)?;
 
-    // For now, just show a placeholder since we don't have message storage implemented yet
+    // Create account configuration
+    let config = saved_core_rs::types::Config {
+        storage_path: account_path.clone(),
+        network_port: 0,
+        enable_mdns: false,
+        allow_public_relays: false,
+        bootstrap_multiaddrs: Vec::new(),
+        use_kademlia: false,
+        chunk_size: 2 * 1024 * 1024, // 2 MiB
+        max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
+    };
+
+    // Open account
+    let account = create_or_open_account(config).await?;
+
+    // Get all messages and find the one with matching ID
+    let messages = account.list_messages().await
+        .map_err(|e| anyhow::anyhow!("Failed to list messages: {}", e))?;
+
+    let message = messages.iter().find(|m| m.id == msg_id)
+        .ok_or_else(|| anyhow::anyhow!("Message with ID {} not found", message_id))?;
+
+    // Display message details
     println!("{}", "Message Details:".bright_blue().bold());
-    println!("Message ID: {}", message_id.bright_blue());
-    println!(
-        "Content: {}",
-        "(Message storage not yet implemented in core library)".yellow()
-    );
+    println!("Message ID: {}", format_short_message_id(&message.id.0).bright_blue());
+    println!("Content: {}", message.content);
+    println!("Created: {}", message.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string().bright_blue());
+    
+    let status = if message.is_purged {
+        "Purged".red()
+    } else if message.is_deleted {
+        "Deleted".yellow()
+    } else {
+        "Active".green()
+    };
+    println!("Status: {}", status);
+    
+    if verbose {
+        println!("Content Length: {} characters", message.content.len());
+        println!("Message ID (full): {}", format_message_id(&message.id.0));
+    }
 
     Ok(())
 }
 
 /// Parse a hex-encoded message ID
 fn parse_message_id(hex_str: &str) -> Result<MessageId> {
+    validate_message_id(hex_str)?;
     let bytes = hex::decode(hex_str).map_err(|_| anyhow::anyhow!("Invalid message ID format"))?;
-
-    if bytes.len() != 32 {
-        return Err(anyhow::anyhow!(
-            "Message ID must be 32 bytes (64 hex characters)"
-        ));
-    }
-
     let mut msg_id_bytes = [0u8; 32];
     msg_id_bytes.copy_from_slice(&bytes);
 

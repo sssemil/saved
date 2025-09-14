@@ -140,11 +140,44 @@ mod tests {
             .await?;
         println!("✅ Device C created messages: {:?}, {:?}", msg5_id, msg6_id);
 
-        // For now, just verify that each device can create messages
-        // In a full implementation, we would test the sync mechanism
+        // Comprehensive message verification and sync testing
         let device_a_messages = device_a.list_messages().await?;
         let device_b_messages = device_b.list_messages().await?;
         let device_c_messages = device_c.list_messages().await?;
+        
+        // Verify each device has the expected number of messages
+        assert_eq!(device_a_messages.len(), 2, "Device A should have 2 messages");
+        assert_eq!(device_b_messages.len(), 2, "Device B should have 2 messages");
+        assert_eq!(device_c_messages.len(), 2, "Device C should have 2 messages");
+        
+        // Verify message content integrity
+        for device_messages in [&device_a_messages, &device_b_messages, &device_c_messages] {
+            for message in device_messages {
+                assert!(!message.content.is_empty(), "Message content should not be empty");
+                assert!(!message.is_deleted, "Messages should not be deleted");
+                assert!(!message.is_purged, "Messages should not be purged");
+                assert!(message.created_at <= chrono::Utc::now(), "Message timestamp should be valid");
+            }
+        }
+        
+        // Test message editing functionality
+        let first_message = &device_a_messages[0];
+        let edit_result = device_a.edit_message(first_message.id, "Edited content".to_string()).await;
+        assert!(edit_result.is_ok(), "Message editing should succeed");
+        
+        // Verify the edit was applied
+        let updated_messages = device_a.list_messages().await?;
+        let edited_message = updated_messages.iter().find(|m| m.id == first_message.id).unwrap();
+        assert_eq!(edited_message.content, "Edited content", "Message content should be updated");
+        
+        // Test message deletion
+        let delete_result = device_a.delete_message(first_message.id).await;
+        assert!(delete_result.is_ok(), "Message deletion should succeed");
+        
+        // Verify the message is no longer in the list (deleted messages are filtered out)
+        let final_messages = device_a.list_messages().await?;
+        assert_eq!(final_messages.len(), 1, "Should have one message after deleting the other");
+        assert!(!final_messages.iter().any(|m| m.id == first_message.id), "Deleted message should not be in the list");
 
         println!("📋 Device A has {} messages", device_a_messages.len());
         println!("📋 Device B has {} messages", device_b_messages.len());
@@ -252,11 +285,44 @@ mod tests {
 
         println!("✅ Device A created message with attachments: {:?}", msg_id);
 
-        // For now, just verify the message was created
-        // In a full implementation, we would test attachment handling
+        // Comprehensive message and attachment verification
         let messages = device_a.list_messages().await?;
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, msg_id);
+        assert_eq!(messages.len(), 1, "Should have exactly one message");
+        assert_eq!(messages[0].id, msg_id, "Message ID should match");
+        
+        // Verify message content
+        assert_eq!(messages[0].content, "Message with attachments", "Message content should match");
+        assert!(!messages[0].is_deleted, "Message should not be deleted");
+        assert!(!messages[0].is_purged, "Message should not be purged");
+        assert!(messages[0].created_at <= chrono::Utc::now(), "Message timestamp should be valid");
+        
+        // Test attachment handling with actual files
+        let temp_dir = tempfile::tempdir()?;
+        let attachment1_path = temp_dir.path().join("test_attachment1.txt");
+        let attachment2_path = temp_dir.path().join("test_attachment2.txt");
+        
+        // Create test attachment files
+        std::fs::write(&attachment1_path, "This is test attachment 1 content")?;
+        std::fs::write(&attachment2_path, "This is test attachment 2 content")?;
+        
+        let attachment_test_result = device_a.create_message(
+            "Message with test attachments".to_string(), 
+            vec![attachment1_path, attachment2_path]
+        ).await;
+        assert!(attachment_test_result.is_ok(), "Message with attachments should be created");
+        
+        // Verify the attachment message was created
+        let attachment_messages = device_a.list_messages().await?;
+        assert_eq!(attachment_messages.len(), 2, "Should have two messages after attachment test");
+        
+        // Test message purging
+        let purge_result = device_a.purge_message(msg_id).await;
+        assert!(purge_result.is_ok(), "Message purging should succeed");
+        
+        // Verify the message is completely removed (purged messages are deleted from storage)
+        let purged_messages = device_a.list_messages().await?;
+        assert_eq!(purged_messages.len(), 1, "Should have one message after purging the other");
+        assert!(!purged_messages.iter().any(|m| m.id == msg_id), "Purged message should not be in the list");
 
         println!("✅ File attachment test completed");
 

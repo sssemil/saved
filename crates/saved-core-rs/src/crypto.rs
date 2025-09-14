@@ -174,6 +174,14 @@ impl DeviceKey {
         self.signing_key.to_bytes()
     }
 
+    /// Create from signing and verifying keys
+    pub fn from_keys(signing_key: SigningKey, verifying_key: VerifyingKey) -> Self {
+        Self {
+            signing_key,
+            verifying_key,
+        }
+    }
+
     /// Sign data with the device key
     pub fn sign(&self, data: &[u8]) -> Signature {
         self.signing_key.sign(data)

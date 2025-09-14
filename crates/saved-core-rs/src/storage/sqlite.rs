@@ -5,8 +5,8 @@
 //! - Content-addressed chunk store for encrypted file attachments
 //! - Reference counting for garbage collection
 
-use crate::error::Result;
-use crate::events::{EventLog, Op};
+use crate::error::{Error, Result};
+use crate::events::Op;
 use crate::types::{Message, MessageId};
 use async_trait::async_trait;
 use rusqlite::{params, Connection};
@@ -25,12 +25,8 @@ pub type ChunkId = [u8; 32];
 pub struct SqliteStorage {
     /// SQLite connection (thread-safe)
     db: Arc<Mutex<Connection>>,
-    /// Path to the account directory
-    account_path: PathBuf,
     /// Path to the chunks directory
     chunks_path: PathBuf,
-    /// In-memory event log
-    event_log: EventLog,
     /// Reference counts for chunks
     chunk_refs: HashMap<ChunkId, u32>,
 }
@@ -56,9 +52,7 @@ impl SqliteStorage {
 
         let mut storage = Self {
             db: Arc::new(Mutex::new(db)),
-            account_path,
             chunks_path,
-            event_log: EventLog::new(),
             chunk_refs: HashMap::new(),
         };
 
@@ -193,28 +187,6 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Update chunk reference count
-    fn update_chunk_ref(&mut self, chunk_id: &ChunkId, delta: i32) -> Result<()> {
-        let current_refs = self.chunk_refs.get(chunk_id).copied().unwrap_or(0);
-        let new_refs = (current_refs as i32 + delta).max(0) as u32;
-
-        let db = self.db.lock().unwrap();
-        if new_refs == 0 {
-            self.chunk_refs.remove(chunk_id);
-            db.execute(
-                "DELETE FROM chunk_refs WHERE chunk_id = ?",
-                params![chunk_id.as_slice()],
-            )?;
-        } else {
-            self.chunk_refs.insert(*chunk_id, new_refs);
-            db.execute(
-                "INSERT OR REPLACE INTO chunk_refs (chunk_id, ref_count) VALUES (?, ?)",
-                params![chunk_id.as_slice(), new_refs],
-            )?;
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -259,10 +231,10 @@ impl Storage for SqliteStorage {
         )?;
 
         let rows = stmt.query_map([], |row| {
-            let hash_bytes: Vec<u8> = row.get(0)?;
+            let _hash_bytes: Vec<u8> = row.get(0)?;
             let op_id_bytes: Vec<u8> = row.get(1)?;
             let device_pubkey_bytes: Vec<u8> = row.get(2)?;
-            let counter: u64 = row.get(3)?;
+            let _counter: u64 = row.get(3)?;
             let lamport: u64 = row.get(4)?;
             let parents_bytes: Vec<u8> = row.get(5)?;
             let operation_data: Vec<u8> = row.get(6)?;
@@ -313,10 +285,10 @@ impl Storage for SqliteStorage {
         )?;
 
         let rows = stmt.query_map(params![device_id.as_slice()], |row| {
-            let hash_bytes: Vec<u8> = row.get(0)?;
+            let _hash_bytes: Vec<u8> = row.get(0)?;
             let op_id_bytes: Vec<u8> = row.get(1)?;
             let device_pubkey_bytes: Vec<u8> = row.get(2)?;
-            let counter: u64 = row.get(3)?;
+            let _counter: u64 = row.get(3)?;
             let lamport: u64 = row.get(4)?;
             let parents_bytes: Vec<u8> = row.get(5)?;
             let operation_data: Vec<u8> = row.get(6)?;
@@ -666,9 +638,61 @@ impl Storage for SqliteStorage {
     }
 
     async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
-        // For now, generate a new device key
-        // In a real implementation, this would be stored and retrieved from storage
-        Ok(crate::crypto::DeviceKey::generate())
+        // Retrieve the stored device key from SQLite database
+        let conn = self.db.lock().unwrap();
+        
+        let result = conn.query_row(
+            "SELECT device_key FROM device_info WHERE id = 1",
+            [],
+            |row| {
+                let key_bytes: Vec<u8> = row.get(0)?;
+                Ok(key_bytes)
+            },
+        );
+        
+        match result {
+            Ok(key_bytes) => {
+                // Deserialize the stored device key from raw bytes
+                if key_bytes.len() == 32 {
+                    // Old format - just signing key bytes
+                    let mut signing_key_bytes = [0u8; 32];
+                    signing_key_bytes.copy_from_slice(&key_bytes);
+                    let device_key = crate::crypto::DeviceKey::from_bytes(&signing_key_bytes)?;
+                    Ok(device_key)
+                } else if key_bytes.len() == 64 {
+                    // New format - both signing and verifying key bytes
+                    let mut signing_key_bytes = [0u8; 32];
+                    let mut verifying_key_bytes = [0u8; 32];
+                    signing_key_bytes.copy_from_slice(&key_bytes[0..32]);
+                    verifying_key_bytes.copy_from_slice(&key_bytes[32..64]);
+                    
+                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_key_bytes);
+                    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
+                        .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
+                    
+                    Ok(crate::crypto::DeviceKey::from_keys(signing_key, verifying_key))
+                } else {
+                    return Err(Error::Storage("Invalid device key length".to_string()));
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // Generate a new device key if none exists
+                let new_device_key = crate::crypto::DeviceKey::generate();
+                
+                // Store the new device key as raw bytes (64 bytes: 32 signing + 32 verifying)
+                let mut key_bytes = Vec::new();
+                key_bytes.extend_from_slice(&new_device_key.private_key_bytes());
+                key_bytes.extend_from_slice(&new_device_key.public_key_bytes());
+                
+                conn.execute(
+                    "INSERT OR REPLACE INTO device_info (id, device_key) VALUES (1, ?)",
+                    [key_bytes],
+                ).map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
+                
+                Ok(new_device_key)
+            }
+            Err(e) => Err(Error::Storage(format!("Failed to retrieve device key: {}", e))),
+        }
     }
 
     async fn get_stats(&self) -> Result<StorageStats> {
