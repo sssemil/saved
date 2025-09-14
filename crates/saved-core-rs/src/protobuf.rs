@@ -290,4 +290,283 @@ mod tests {
 
         assert_eq!(body, decoded);
     }
+
+    #[test]
+    fn test_edit_message_serialization() {
+        let body = EditMessageBody {
+            msg_id: vec![1, 2, 3, 4],
+            payload: Some(edit_message_body::Payload::BodyFull("Updated message".to_string())),
+            edited_at_ms: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = EditMessageBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_edit_message_delta_serialization() {
+        let body = EditMessageBody {
+            msg_id: vec![1, 2, 3, 4],
+            payload: Some(edit_message_body::Payload::BodyDelta(vec![1, 2, 3, 4, 5])),
+            edited_at_ms: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = EditMessageBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_delete_message_serialization() {
+        let body = DeleteMessageBody {
+            msg_id: vec![1, 2, 3, 4],
+            reason: "User requested deletion".to_string(),
+            deleted_at_ms: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = DeleteMessageBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_attach_body_serialization() {
+        let body = AttachBody {
+            msg_id: vec![1, 2, 3, 4],
+            att_cids: vec![vec![5, 6, 7, 8], vec![9, 10, 11, 12]],
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = AttachBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_detach_body_serialization() {
+        let body = DetachBody {
+            msg_id: vec![1, 2, 3, 4],
+            att_cids: vec![vec![5, 6, 7, 8]],
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = DetachBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_ack_body_serialization() {
+        let body = AckBody {
+            up_to_op: vec![1, 2, 3, 4],
+            ts: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = AckBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_purge_body_serialization() {
+        let body = PurgeBody {
+            msg_id: vec![1, 2, 3, 4],
+            ts: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = PurgeBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
+
+    #[test]
+    fn test_op_envelope_serialization() {
+        let header = OpHeader {
+            op_id: vec![1, 2, 3, 4],
+            lamport: 42,
+            parents: vec![vec![5, 6, 7, 8]],
+            signer: vec![9, 10, 11, 12],
+            sig: vec![13, 14, 15, 16],
+        };
+
+        let envelope = OpEnvelope {
+            header: Some(header),
+            ciphertext: vec![17, 18, 19, 20],
+        };
+
+        let encoded = envelope.encode_to_vec();
+        let decoded = OpEnvelope::decode(&encoded[..]).unwrap();
+
+        assert_eq!(envelope, decoded);
+    }
+
+    #[test]
+    fn test_announce_heads_serialization() {
+        let announce = AnnounceHeads {
+            feed_id: "default".to_string(),
+            lamport: 42,
+            heads: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+        };
+
+        let encoded = announce.encode_to_vec();
+        let decoded = AnnounceHeads::decode(&encoded[..]).unwrap();
+
+        assert_eq!(announce, decoded);
+    }
+
+    #[test]
+    fn test_fetch_ops_req_serialization() {
+        let req = FetchOpsReq {
+            since_heads: vec![vec![1, 2, 3, 4]],
+            want_max: 100,
+        };
+
+        let encoded = req.encode_to_vec();
+        let decoded = FetchOpsReq::decode(&encoded[..]).unwrap();
+
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_fetch_ops_resp_serialization() {
+        let header = OpHeader {
+            op_id: vec![1, 2, 3, 4],
+            lamport: 42,
+            parents: vec![vec![5, 6, 7, 8]],
+            signer: vec![9, 10, 11, 12],
+            sig: vec![13, 14, 15, 16],
+        };
+
+        let envelope = OpEnvelope {
+            header: Some(header),
+            ciphertext: vec![17, 18, 19, 20],
+        };
+
+        let resp = FetchOpsResp {
+            ops: vec![envelope],
+            new_heads: vec![vec![21, 22, 23, 24]],
+        };
+
+        let encoded = resp.encode_to_vec();
+        let decoded = FetchOpsResp::decode(&encoded[..]).unwrap();
+
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn test_have_chunks_req_serialization() {
+        let req = HaveChunksReq {
+            cids: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+        };
+
+        let encoded = req.encode_to_vec();
+        let decoded = HaveChunksReq::decode(&encoded[..]).unwrap();
+
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_have_chunks_resp_serialization() {
+        let resp = HaveChunksResp {
+            have_bitmap: vec![0b10101010, 0b01010101],
+        };
+
+        let encoded = resp.encode_to_vec();
+        let decoded = HaveChunksResp::decode(&encoded[..]).unwrap();
+
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn test_fetch_chunks_req_serialization() {
+        let req = FetchChunksReq {
+            cids: vec![vec![1, 2, 3, 4]],
+        };
+
+        let encoded = req.encode_to_vec();
+        let decoded = FetchChunksReq::decode(&encoded[..]).unwrap();
+
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn test_fetch_chunks_resp_serialization() {
+        let chunk = fetch_chunks_resp::Chunk {
+            cid: vec![1, 2, 3, 4],
+            data: vec![5, 6, 7, 8],
+        };
+
+        let resp = FetchChunksResp {
+            chunks: vec![chunk],
+        };
+
+        let encoded = resp.encode_to_vec();
+        let decoded = FetchChunksResp::decode(&encoded[..]).unwrap();
+
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn test_onboarding_token_serialization() {
+        let token = OnboardingToken {
+            account_pubkey: vec![1, 2, 3, 4],
+            expires_at: 1234567890,
+            nonce: vec![5, 6, 7, 8],
+            signature: vec![9, 10, 11, 12],
+        };
+
+        let encoded = token.encode_to_vec();
+        let decoded = OnboardingToken::decode(&encoded[..]).unwrap();
+
+        assert_eq!(token, decoded);
+    }
+
+    #[test]
+    fn test_protocol_constants() {
+        assert_eq!(protocol::HEADS_TOPIC, "/savedmsgs/{account_id}/heads");
+        assert_eq!(protocol::OPS_PROTOCOL, "/savedmsgs/1/ops");
+        assert_eq!(protocol::CHUNKS_PROTOCOL, "/savedmsgs/1/chunks");
+        assert_eq!(protocol::LINKING_PROTOCOL, "/savedmsgs/1/linking");
+    }
+
+    #[test]
+    fn test_empty_fields_serialization() {
+        // Test that empty fields serialize/deserialize correctly
+        let header = OpHeader {
+            op_id: vec![],
+            lamport: 0,
+            parents: vec![],
+            signer: vec![],
+            sig: vec![],
+        };
+
+        let encoded = header.encode_to_vec();
+        let decoded = OpHeader::decode(&encoded[..]).unwrap();
+
+        assert_eq!(header, decoded);
+    }
+
+    #[test]
+    fn test_large_data_serialization() {
+        // Test with larger data to ensure protobuf handles it correctly
+        let large_data = vec![42u8; 10000];
+        let body = CreateMessageBody {
+            msg_id: large_data.clone(),
+            feed_id: "test".to_string(),
+            body: "Large message body".to_string(),
+            att_cids: vec![large_data.clone(), large_data],
+            created_at_ms: 1234567890,
+        };
+
+        let encoded = body.encode_to_vec();
+        let decoded = CreateMessageBody::decode(&encoded[..]).unwrap();
+
+        assert_eq!(body, decoded);
+    }
 }

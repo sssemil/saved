@@ -17,15 +17,21 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = Config {
-//!         account_path: PathBuf::from("./test-account"),
+//!         storage_path: PathBuf::from("./test-account"),
 //!         network_port: 8080,
 //!         enable_mdns: true,
+//!         allow_public_relays: false,
+//!         bootstrap_multiaddrs: Vec::new(),
+//!         use_kademlia: false,
+//!         chunk_size: 2 * 1024 * 1024,
+//!         max_parallel_chunks: 4,
+//!         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
 //!     };
 //!     
-//!     let account = AccountHandle::create_or_open(config).await?;
+//!     let mut account = AccountHandle::create_or_open(config).await?;
 //!     
 //!     // Create a message
-//!     let msg_id = account.create_message("Hello, world!").await?;
+//!     let msg_id = account.create_message("Hello, world!".to_string(), Vec::new()).await?;
 //!     println!("Created message: {:?}", msg_id);
 //!     
 //!     Ok(())

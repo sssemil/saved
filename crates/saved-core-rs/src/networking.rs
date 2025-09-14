@@ -24,6 +24,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use futures::StreamExt;
+use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 
 /// Network manager for SAVED
 pub struct NetworkManager {
@@ -75,32 +77,54 @@ impl request_response::Codec for OpsCodec {
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // TODO: Implement proper protobuf deserialization
-        todo!("Implement OpsCodec::read_request")
+        // Read length-prefixed protobuf message
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        let mut buffer = vec![0u8; length];
+        io.read_exact(&mut buffer).await?;
+        
+        Ok(Some(buffer))
     }
 
     fn read_response<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T) -> std::io::Result<Option<Self::Response>>
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // TODO: Implement proper protobuf deserialization
-        todo!("Implement OpsCodec::read_response")
+        // Read length-prefixed protobuf message
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        let mut buffer = vec![0u8; length];
+        io.read_exact(&mut buffer).await?;
+        
+        Ok(Some(buffer))
     }
 
     fn write_request<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T, req: Self::Request) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // TODO: Implement proper protobuf serialization
-        todo!("Implement OpsCodec::write_request")
+        // Write length-prefixed protobuf message
+        let length = req.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&req).await?;
+        io.flush().await?;
+        Ok(())
     }
 
     fn write_response<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T, resp: Self::Response) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // TODO: Implement proper protobuf serialization
-        todo!("Implement OpsCodec::write_response")
+        // Write length-prefixed protobuf message
+        let length = resp.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&resp).await?;
+        io.flush().await?;
+        Ok(())
     }
 }
 
@@ -113,32 +137,54 @@ impl request_response::Codec for ChunksCodec {
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // TODO: Implement proper protobuf deserialization
-        todo!("Implement ChunksCodec::read_request")
+        // Read length-prefixed protobuf message
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        let mut buffer = vec![0u8; length];
+        io.read_exact(&mut buffer).await?;
+        
+        Ok(Some(buffer))
     }
 
     fn read_response<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T) -> std::io::Result<Option<Self::Response>>
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // TODO: Implement proper protobuf deserialization
-        todo!("Implement ChunksCodec::read_response")
+        // Read length-prefixed protobuf message
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        let mut buffer = vec![0u8; length];
+        io.read_exact(&mut buffer).await?;
+        
+        Ok(Some(buffer))
     }
 
     fn write_request<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T, req: Self::Request) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // TODO: Implement proper protobuf serialization
-        todo!("Implement ChunksCodec::write_request")
+        // Write length-prefixed protobuf message
+        let length = req.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&req).await?;
+        io.flush().await?;
+        Ok(())
     }
 
     fn write_response<T>(&mut self, _: &request_response::ProtocolSupport, io: &mut T, resp: Self::Response) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // TODO: Implement proper protobuf serialization
-        todo!("Implement ChunksCodec::write_response")
+        // Write length-prefixed protobuf message
+        let length = resp.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        io.write_all(&resp).await?;
+        io.flush().await?;
+        Ok(())
     }
 }
 
@@ -544,6 +590,8 @@ impl NetworkManager {
 mod tests {
     use super::*;
     use crate::crypto::DeviceKey;
+    use futures::io::Cursor;
+    use std::io::Result as IoResult;
 
     #[tokio::test]
     async fn test_network_manager_creation() {
@@ -553,5 +601,239 @@ mod tests {
         
         let network_manager = NetworkManager::new(device_key, event_sender, event_log).await;
         assert!(network_manager.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ops_codec_read_request() {
+        let mut codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Create test data
+        let test_data = vec![1, 2, 3, 4, 5];
+        let length = test_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&test_data);
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = codec.read_request(&protocol, &mut cursor).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(test_data));
+    }
+
+    #[tokio::test]
+    async fn test_ops_codec_read_response() {
+        let mut codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Create test data
+        let test_data = vec![5, 4, 3, 2, 1];
+        let length = test_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&test_data);
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = codec.read_response(&protocol, &mut cursor).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(test_data));
+    }
+
+    #[tokio::test]
+    async fn test_ops_codec_write_request() {
+        let mut codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        let test_data = vec![1, 2, 3, 4, 5];
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+        
+        let result = codec.write_request(&protocol, &mut cursor, test_data.clone()).await;
+        assert!(result.is_ok());
+        
+        // Verify the written data
+        let expected_length = test_data.len() as u32;
+        let expected_bytes = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&expected_length.to_be_bytes());
+            bytes.extend_from_slice(&test_data);
+            bytes
+        };
+        
+        assert_eq!(buffer, expected_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_ops_codec_write_response() {
+        let mut codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        let test_data = vec![5, 4, 3, 2, 1];
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+        
+        let result = codec.write_response(&protocol, &mut cursor, test_data.clone()).await;
+        assert!(result.is_ok());
+        
+        // Verify the written data
+        let expected_length = test_data.len() as u32;
+        let expected_bytes = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&expected_length.to_be_bytes());
+            bytes.extend_from_slice(&test_data);
+            bytes
+        };
+        
+        assert_eq!(buffer, expected_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_chunks_codec_read_request() {
+        let mut codec = ChunksCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Create test data
+        let test_data = vec![10, 20, 30, 40, 50];
+        let length = test_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&test_data);
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = codec.read_request(&protocol, &mut cursor).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(test_data));
+    }
+
+    #[tokio::test]
+    async fn test_chunks_codec_read_response() {
+        let mut codec = ChunksCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Create test data
+        let test_data = vec![50, 40, 30, 20, 10];
+        let length = test_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&test_data);
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = codec.read_response(&protocol, &mut cursor).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(test_data));
+    }
+
+    #[tokio::test]
+    async fn test_chunks_codec_write_request() {
+        let mut codec = ChunksCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        let test_data = vec![10, 20, 30, 40, 50];
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+        
+        let result = codec.write_request(&protocol, &mut cursor, test_data.clone()).await;
+        assert!(result.is_ok());
+        
+        // Verify the written data
+        let expected_length = test_data.len() as u32;
+        let expected_bytes = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&expected_length.to_be_bytes());
+            bytes.extend_from_slice(&test_data);
+            bytes
+        };
+        
+        assert_eq!(buffer, expected_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_chunks_codec_write_response() {
+        let mut codec = ChunksCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        let test_data = vec![50, 40, 30, 20, 10];
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+        
+        let result = codec.write_response(&protocol, &mut cursor, test_data.clone()).await;
+        assert!(result.is_ok());
+        
+        // Verify the written data
+        let expected_length = test_data.len() as u32;
+        let expected_bytes = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&expected_length.to_be_bytes());
+            bytes.extend_from_slice(&test_data);
+            bytes
+        };
+        
+        assert_eq!(buffer, expected_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_codec_empty_data() {
+        let mut ops_codec = OpsCodec::default();
+        let mut chunks_codec = ChunksCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Test empty data
+        let empty_data = vec![];
+        let length = empty_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&empty_data);
+        
+        let mut cursor = Cursor::new(buffer.clone());
+        let result = ops_codec.read_request(&protocol, &mut cursor).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(empty_data.clone()));
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = chunks_codec.read_request(&protocol, &mut cursor).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(empty_data));
+    }
+
+    #[tokio::test]
+    async fn test_codec_large_data() {
+        let mut ops_codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        // Test with larger data
+        let large_data = vec![42u8; 10000];
+        let length = large_data.len() as u32;
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&length.to_be_bytes());
+        buffer.extend_from_slice(&large_data);
+        
+        let mut cursor = Cursor::new(buffer);
+        let result = ops_codec.read_request(&protocol, &mut cursor).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(large_data));
+    }
+
+    #[tokio::test]
+    async fn test_codec_roundtrip() {
+        let mut ops_codec = OpsCodec::default();
+        let protocol = request_response::ProtocolSupport::default();
+        
+        let original_data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        
+        // Write the data
+        let mut write_buffer = Vec::new();
+        let mut write_cursor = Cursor::new(&mut write_buffer);
+        let write_result = ops_codec.write_request(&protocol, &mut write_cursor, original_data.clone()).await;
+        assert!(write_result.is_ok());
+        
+        // Read the data back
+        let mut read_cursor = Cursor::new(write_buffer);
+        let read_result = ops_codec.read_request(&protocol, &mut read_cursor).await;
+        assert!(read_result.is_ok());
+        assert_eq!(read_result.unwrap(), Some(original_data));
     }
 }
