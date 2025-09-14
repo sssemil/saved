@@ -1,0 +1,44 @@
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Rust test artifacts
+*.pdb
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# SAVED specific
+saved-account/
+*.db
+*.sqlite
+*.sqlite3
+
+# Tauri build artifacts
+tauri-app/dist/
+tauri-app/src-tauri/target/
+
+# Node.js (for Tauri frontend)
+tauri-app/node_modules/
+tauri-app/package-lock.json
+
+# Android build artifacts
+tauri-app/src-tauri/gen/android/
