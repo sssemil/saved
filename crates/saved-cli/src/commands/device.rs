@@ -1,11 +1,11 @@
 //! Device linking commands
 
+use crate::utils::formatting::{print_section_header, print_success};
 use anyhow::Result;
 use colored::*;
+use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use saved_core::{create_or_open_account, Config, QrPayload};
 use std::path::PathBuf;
-use crate::utils::formatting::{print_success, print_section_header};
-use comfy_table::{Table, presets::UTF8_FULL, Cell};
 
 /// Generate QR code for device linking
 pub async fn link_command(
@@ -55,10 +55,11 @@ pub async fn link_command(
     // Save to file if requested
     if let Some(output_path) = output {
         // Implement proper device export with multiple formats
-        let extension = output_path.extension()
+        let extension = output_path
+            .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("txt");
-        
+
         match extension.to_lowercase().as_str() {
             "json" => {
                 // Save as JSON payload
@@ -67,7 +68,7 @@ pub async fn link_command(
                     "QR payload saved to: {}",
                     output_path.display().to_string().bright_blue()
                 );
-            },
+            }
             "txt" => {
                 // Save as formatted text file
                 let mut content = String::new();
@@ -79,13 +80,13 @@ pub async fn link_command(
                 content.push_str("1. Open SAVED on another device\n");
                 content.push_str("2. Use the 'saved accept' command with this JSON payload\n");
                 content.push_str("3. The devices will be linked and can sync messages\n");
-                
+
                 std::fs::write(&output_path, content)?;
                 println!(
                     "Device export saved to: {}",
                     output_path.display().to_string().bright_blue()
                 );
-            },
+            }
             _ => {
                 // Default to text format
                 let mut content = String::new();
@@ -97,7 +98,7 @@ pub async fn link_command(
                 content.push_str("1. Open SAVED on another device\n");
                 content.push_str("2. Use the 'saved accept' command with this JSON payload\n");
                 content.push_str("3. The devices will be linked and can sync messages\n");
-                
+
                 std::fs::write(&output_path, content)?;
                 println!(
                     "Device export saved to: {}",
@@ -201,7 +202,14 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
-    table.set_header(vec!["Type", "Device ID", "Name", "State", "Health", "Addresses"]);
+    table.set_header(vec![
+        "Type",
+        "Device ID",
+        "Name",
+        "State",
+        "Health",
+        "Addresses",
+    ]);
 
     // Local device row
     table.add_row(vec![
@@ -216,8 +224,14 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     // Connected peers
     let connected = account.connected_peers().await;
     for (id, info) in connected.iter() {
-        let state = account.peer_connection_state(id).await.unwrap_or_else(|| "Connected".to_string());
-        let health = account.peer_health(id).await.unwrap_or_else(|| "Unknown".to_string());
+        let state = account
+            .peer_connection_state(id)
+            .await
+            .unwrap_or_else(|| "Connected".to_string());
+        let health = account
+            .peer_health(id)
+            .await
+            .unwrap_or_else(|| "Unknown".to_string());
         table.add_row(vec![
             Cell::new("Connected"),
             Cell::new(id),
@@ -232,7 +246,9 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     let discovered = account.discovered_peers().await;
     for (id, di) in discovered.iter() {
         // Skip if already connected and shown
-        if connected.contains_key(id) { continue; }
+        if connected.contains_key(id) {
+            continue;
+        }
         table.add_row(vec![
             Cell::new("Discovered"),
             Cell::new(id),
@@ -248,72 +264,8 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     Ok(())
 }
 
-/// Accept a device link from a QR code payload
-pub async fn accept_link_command(
-    account_path: &PathBuf,
-    qr_payload_json: String,
-    verbose: bool,
-) -> Result<()> {
-    if verbose {
-        println!("Accepting device link from QR code payload...");
-    }
-
-    // Parse the QR payload
-    let qr_payload: saved_core::QrPayload = serde_json::from_str(&qr_payload_json)
-        .map_err(|e| anyhow::anyhow!("Failed to parse QR payload: {}", e))?;
-
-    if verbose {
-        println!("QR Payload parsed successfully:");
-        println!("  Device ID: {}", qr_payload.device_id);
-        println!("  Expires at: {}", qr_payload.expires_at);
-        println!("  Addresses: {:?}", qr_payload.addresses);
-    }
-
-    // Create configuration
-    let config = Config {
-        storage_path: account_path.clone(),
-        network_port: 8080,
-        enable_mdns: true,
-        allow_public_relays: false,
-        bootstrap_multiaddrs: Vec::new(),
-        use_kademlia: false,
-        chunk_size: 2 * 1024 * 1024, // 2 MiB
-        max_parallel_chunks: 4,
-        storage_backend: saved_core::storage::StorageBackend::Sqlite,
-        account_passphrase: None,
-    };
-
-    // Open account
-    let account = create_or_open_account(config).await?;
-
-    // Accept the device link
-    match account.accept_link(qr_payload).await {
-        Ok(device_info) => {
-            print_success("Device link accepted successfully!");
-            println!("Device ID: {}", device_info.device_id);
-            println!("Device Name: {}", device_info.device_name);
-            println!("Authorized: {}", if device_info.is_authorized { "Yes" } else { "No" });
-            
-            if device_info.is_authorized {
-                println!("✅ Device is authorized and can sync messages");
-            } else {
-                println!("⚠️  Device is not authorized - certificate verification failed");
-            }
-        }
-        Err(e) => {
-            println!("{} {}", "Failed to accept device link:".red(), e);
-            return Err(anyhow::anyhow!("Device link failed: {}", e));
-        }
-    }
-
-    Ok(())
-}
-
 /// List all authorized devices
-pub async fn list_authorized_command(
-    account_path: &PathBuf,
-    verbose: bool,
-) -> Result<()> {
+pub async fn list_authorized_command(account_path: &PathBuf, verbose: bool) -> Result<()> {
     if verbose {
         println!("Listing authorized devices...");
     }
@@ -342,11 +294,16 @@ pub async fn list_authorized_command(
                 println!("No authorized devices found.");
             } else {
                 print_section_header("Authorized Devices:");
-                
+
                 let mut table = Table::new();
                 table.load_preset(UTF8_FULL);
-                table.set_header(vec!["Device ID", "Name", "Last Seen", "Certificate Expires"]);
-                
+                table.set_header(vec![
+                    "Device ID",
+                    "Name",
+                    "Last Seen",
+                    "Certificate Expires",
+                ]);
+
                 for device in devices {
                     let expires_str = if let Some(cert) = &device.device_cert {
                         if let Some(expires) = cert.expires_at {
@@ -357,7 +314,7 @@ pub async fn list_authorized_command(
                     } else {
                         "Unknown".to_string()
                     };
-                    
+
                     table.add_row(vec![
                         Cell::new(&device.device_id),
                         Cell::new(&device.device_name),
@@ -365,7 +322,7 @@ pub async fn list_authorized_command(
                         Cell::new(expires_str),
                     ]);
                 }
-                
+
                 println!("{}", table);
             }
         }
@@ -408,7 +365,10 @@ pub async fn revoke_device_command(
     // Revoke device
     match account.revoke_device(&device_id).await {
         Ok(_) => {
-            print_success(&format!("Device {} authorization revoked successfully!", device_id));
+            print_success(&format!(
+                "Device {} authorization revoked successfully!",
+                device_id
+            ));
         }
         Err(e) => {
             println!("{} {}", "Failed to revoke device authorization:".red(), e);

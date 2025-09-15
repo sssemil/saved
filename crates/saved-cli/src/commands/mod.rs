@@ -6,10 +6,12 @@ pub mod import_export;
 pub mod message;
 pub mod sync;
 
-pub use device::{accept_command, devices_command, link_command, list_authorized_command, revoke_device_command};
+pub use account::{info_command, init_command};
+pub use device::{
+    accept_command, devices_command, link_command, list_authorized_command, revoke_device_command,
+};
 pub use import_export::{export_command, import_command};
-pub use sync::{discover_command, status_command, sync_command, connect_command, relay_command};
-pub use account::{init_command, info_command};
-pub use message::{create_command, list_command, edit_command, delete_command, show_command};
+pub use message::{create_command, delete_command, edit_command, list_command, show_command};
+pub use sync::{connect_command, discover_command, relay_command, status_command, sync_command};
 
 // Intentionally do not glob-export to avoid unused import warnings in consumers

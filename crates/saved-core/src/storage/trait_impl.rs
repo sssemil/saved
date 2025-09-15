@@ -86,7 +86,8 @@ pub trait Storage: Send + Sync {
     async fn is_device_authorized(&self, device_id: &str) -> Result<bool>;
 
     /// Store device certificate for this device
-    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()>;
+    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert)
+        -> Result<()>;
 
     /// Get device certificate for this device
     async fn get_device_certificate(&self) -> Result<Option<crate::crypto::DeviceCert>>;
@@ -101,7 +102,15 @@ pub trait Storage: Send + Sync {
     async fn get_stats(&self) -> Result<StorageStats>;
 
     /// Store attachment metadata and its chunk mapping
-    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64>;
+    async fn store_attachment(
+        &self,
+        message_id: &MessageId,
+        filename: &str,
+        size: u64,
+        file_hash: &[u8; 32],
+        mime_type: Option<String>,
+        chunk_ids: &Vec<[u8; 32]>,
+    ) -> Result<i64>;
 
     /// Get attachments for a message
     async fn get_attachments_for_message(&self, message_id: &MessageId) -> Result<Vec<Attachment>>;
@@ -132,7 +141,6 @@ pub trait Storage: Send + Sync {
 
     /// Garbage collect orphaned chunks and attachments
     async fn garbage_collect_attachments(&self) -> Result<GarbageCollectionStats>;
-
 }
 
 /// Storage statistics
@@ -180,7 +188,7 @@ pub struct Attachment {
 /// Attachment status for lifecycle management
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttachmentStatus {
-    Active,   // Normal attachment
-    Deleted,  // Soft deleted
-    Purged,   // Hard deleted, chunks may be garbage collected
+    Active,  // Normal attachment
+    Deleted, // Soft deleted
+    Purged,  // Hard deleted, chunks may be garbage collected
 }

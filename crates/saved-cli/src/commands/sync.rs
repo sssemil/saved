@@ -1,11 +1,11 @@
 //! Sync and network commands
 
+use crate::utils::formatting::{print_section_header, print_success};
 use anyhow::Result;
 use colored::*;
+use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
-use crate::utils::formatting::{print_success, print_section_header};
-use comfy_table::{Table, presets::UTF8_FULL, Cell};
 
 /// Start network sync
 pub async fn sync_command(account_path: &PathBuf, daemon: bool, verbose: bool) -> Result<()> {
@@ -114,9 +114,15 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
     // Network status
     println!("\n{}", "Network:".bright_blue().bold());
     let connected_peers = account.connected_peers_count().await;
-    println!("Connected peers: {}", connected_peers.to_string().bright_blue());
+    println!(
+        "Connected peers: {}",
+        connected_peers.to_string().bright_blue()
+    );
     let discovered = account.discovered_peers().await;
-    println!("Discovered peers: {}", discovered.len().to_string().bright_blue());
+    println!(
+        "Discovered peers: {}",
+        discovered.len().to_string().bright_blue()
+    );
     println!("Sync progress: {}", "N/A".bright_blue());
 
     // Storage status
@@ -126,10 +132,19 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
         account_path.display().to_string().bright_blue()
     );
     if let Ok(stats) = account.storage_stats().await {
-        println!("Messages: {}", stats.message_count.to_string().bright_blue());
-        println!("Operations: {}", stats.operation_count.to_string().bright_blue());
+        println!(
+            "Messages: {}",
+            stats.message_count.to_string().bright_blue()
+        );
+        println!(
+            "Operations: {}",
+            stats.operation_count.to_string().bright_blue()
+        );
         println!("Chunks: {}", stats.chunk_count.to_string().bright_blue());
-        println!("Total size: {} bytes", stats.total_size.to_string().bright_blue());
+        println!(
+            "Total size: {} bytes",
+            stats.total_size.to_string().bright_blue()
+        );
     } else {
         println!("Messages: {}", "N/A".bright_blue());
         println!("Attachments: {}", "N/A".bright_blue());
@@ -192,7 +207,12 @@ pub async fn discover_command(account_path: &PathBuf, verbose: bool) -> Result<(
 }
 
 /// Connect to a discovered peer by device id
-pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_addresses: Vec<String>, verbose: bool) -> Result<()> {
+pub async fn connect_command(
+    account_path: &PathBuf,
+    device_id: &str,
+    override_addresses: Vec<String>,
+    verbose: bool,
+) -> Result<()> {
     if verbose {
         println!("Connecting to peer {}...", device_id);
     }
@@ -235,7 +255,10 @@ pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_a
         return Ok(());
     }
 
-    match account.connect_to_peer(device_id.to_string(), addresses.clone()).await {
+    match account
+        .connect_to_peer(device_id.to_string(), addresses.clone())
+        .await
+    {
         Ok(_) => {
             print_success("Connection attempt started/succeeded");
             if verbose {
@@ -251,7 +274,11 @@ pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_a
 }
 
 /// Connect to a relay server for hole punching
-pub async fn relay_command(account_path: &PathBuf, relay_address: String, verbose: bool) -> Result<()> {
+pub async fn relay_command(
+    account_path: &PathBuf,
+    relay_address: String,
+    verbose: bool,
+) -> Result<()> {
     if verbose {
         println!("Connecting to relay server: {}", relay_address);
     }
@@ -287,4 +314,3 @@ pub async fn relay_command(account_path: &PathBuf, relay_address: String, verbos
 
     Ok(())
 }
-

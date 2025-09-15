@@ -3,9 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::trait_impl::{Storage, StorageStats, Attachment};
+use super::trait_impl::{Attachment, Storage, StorageStats};
 use crate::error::{Error, Result};
-use crate::error_recovery::ErrorRecoveryManager;
 use crate::events::Op;
 use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
@@ -25,7 +24,6 @@ pub struct MemoryStorage {
     device_key: Arc<RwLock<Option<Vec<u8>>>>,
     attachments: Arc<RwLock<HashMap<i64, Attachment>>>,
     attachment_chunks: Arc<RwLock<HashMap<i64, Vec<[u8; 32]>>>>,
-    error_recovery: Arc<RwLock<ErrorRecoveryManager>>,
 }
 
 impl MemoryStorage {
@@ -44,7 +42,6 @@ impl MemoryStorage {
             device_key: Arc::new(RwLock::new(None)),
             attachments: Arc::new(RwLock::new(HashMap::new())),
             attachment_chunks: Arc::new(RwLock::new(HashMap::new())),
-            error_recovery: Arc::new(RwLock::new(ErrorRecoveryManager::new())),
         }
     }
 }
@@ -211,7 +208,10 @@ impl Storage for MemoryStorage {
         Ok(devices.contains_key(device_id))
     }
 
-    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()> {
+    async fn store_device_certificate(
+        &self,
+        device_cert: &crate::crypto::DeviceCert,
+    ) -> Result<()> {
         let mut cert = self.device_certificate.write().await;
         *cert = Some(device_cert.clone());
         Ok(())
@@ -225,7 +225,7 @@ impl Storage for MemoryStorage {
     async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
         // Retrieve the stored device key from memory storage
         let device_key_data = self.device_key.read().await;
-        
+
         if let Some(key_bytes) = device_key_data.as_ref() {
             // Deserialize the stored device key from raw bytes
             if key_bytes.len() == 32 {
@@ -240,27 +240,31 @@ impl Storage for MemoryStorage {
                 let mut verifying_key_bytes = [0u8; 32];
                 signing_key_bytes.copy_from_slice(&key_bytes[0..32]);
                 verifying_key_bytes.copy_from_slice(&key_bytes[32..64]);
-                
+
                 let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_key_bytes);
-                let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
-                    .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
-                
-                    Ok(crate::crypto::DeviceKey::from_keys(signing_key, verifying_key))
+                let verifying_key =
+                    ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
+                        .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
+
+                Ok(crate::crypto::DeviceKey::from_keys(
+                    signing_key,
+                    verifying_key,
+                ))
             } else {
                 return Err(Error::Storage("Invalid device key length".to_string()));
             }
         } else {
             // Generate a new device key if none exists
             let new_device_key = crate::crypto::DeviceKey::generate();
-            
+
             // Store the new device key as raw bytes (64 bytes: 32 signing + 32 verifying)
             let mut key_bytes = Vec::new();
             key_bytes.extend_from_slice(&new_device_key.private_key_bytes());
             key_bytes.extend_from_slice(&new_device_key.public_key_bytes());
-            
+
             let mut stored_key = self.device_key.write().await;
             *stored_key = Some(key_bytes);
-            
+
             Ok(new_device_key)
         }
     }
@@ -270,10 +274,10 @@ impl Storage for MemoryStorage {
         let mut key_bytes = Vec::new();
         key_bytes.extend_from_slice(&device_key.private_key_bytes());
         key_bytes.extend_from_slice(&device_key.public_key_bytes());
-        
+
         let mut stored_key = self.device_key.write().await;
         *stored_key = Some(key_bytes);
-        
+
         Ok(())
     }
 
@@ -292,28 +296,46 @@ impl Storage for MemoryStorage {
         })
     }
 
-    async fn store_attachment(&self, message_id: &crate::types::MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+    async fn store_attachment(
+        &self,
+        message_id: &crate::types::MessageId,
+        filename: &str,
+        size: u64,
+        file_hash: &[u8; 32],
+        mime_type: Option<String>,
+        chunk_ids: &Vec<[u8; 32]>,
+    ) -> Result<i64> {
         let mut atts = self.attachments.write().await;
         let mut att_chunks = self.attachment_chunks.write().await;
         let new_id = (atts.len() as i64) + 1;
-        atts.insert(new_id, Attachment {
-            id: new_id,
-            message_id: *message_id,
-            filename: filename.to_string(),
-            size,
-            file_hash: *file_hash,
-            mime_type,
-            status: super::trait_impl::AttachmentStatus::Active,
-            created_at: chrono::Utc::now(),
-            last_accessed: None,
-        });
+        atts.insert(
+            new_id,
+            Attachment {
+                id: new_id,
+                message_id: *message_id,
+                filename: filename.to_string(),
+                size,
+                file_hash: *file_hash,
+                mime_type,
+                status: super::trait_impl::AttachmentStatus::Active,
+                created_at: chrono::Utc::now(),
+                last_accessed: None,
+            },
+        );
         att_chunks.insert(new_id, chunk_ids.clone());
         Ok(new_id)
     }
 
-    async fn get_attachments_for_message(&self, message_id: &crate::types::MessageId) -> Result<Vec<Attachment>> {
+    async fn get_attachments_for_message(
+        &self,
+        message_id: &crate::types::MessageId,
+    ) -> Result<Vec<Attachment>> {
         let atts = self.attachments.read().await;
-        Ok(atts.values().filter(|a| &a.message_id == message_id).cloned().collect())
+        Ok(atts
+            .values()
+            .filter(|a| &a.message_id == message_id)
+            .cloned()
+            .collect())
     }
 
     async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>> {
@@ -333,7 +355,11 @@ impl Storage for MemoryStorage {
 
     async fn get_attachments_by_file_hash(&self, file_hash: &[u8; 32]) -> Result<Vec<Attachment>> {
         let atts = self.attachments.read().await;
-        Ok(atts.values().filter(|a| &a.file_hash == file_hash).cloned().collect())
+        Ok(atts
+            .values()
+            .filter(|a| &a.file_hash == file_hash)
+            .cloned()
+            .collect())
     }
 
     async fn delete_attachment(&self, attachment_id: i64) -> Result<()> {
@@ -347,12 +373,12 @@ impl Storage for MemoryStorage {
     async fn purge_attachment(&self, attachment_id: i64) -> Result<()> {
         let mut atts = self.attachments.write().await;
         let mut att_chunks = self.attachment_chunks.write().await;
-        
+
         // Mark as purged
         if let Some(attachment) = atts.get_mut(&attachment_id) {
             attachment.status = super::trait_impl::AttachmentStatus::Purged;
         }
-        
+
         // Remove chunk mapping (chunks will be garbage collected separately)
         att_chunks.remove(&attachment_id);
         Ok(())
@@ -397,17 +423,20 @@ impl Storage for MemoryStorage {
         })
     }
 
-    async fn garbage_collect_attachments(&self) -> Result<super::trait_impl::GarbageCollectionStats> {
+    async fn garbage_collect_attachments(
+        &self,
+    ) -> Result<super::trait_impl::GarbageCollectionStats> {
         let mut atts = self.attachments.write().await;
         let mut att_chunks = self.attachment_chunks.write().await;
         let mut chunks = self.chunks.write().await;
-        
+
         let mut chunks_removed = 0;
         let mut attachments_removed = 0;
         let mut space_freed = 0u64;
 
         // Find purged attachments and remove them
-        let purged_ids: Vec<i64> = atts.iter()
+        let purged_ids: Vec<i64> = atts
+            .iter()
             .filter(|(_, att)| att.status == super::trait_impl::AttachmentStatus::Purged)
             .map(|(id, _)| *id)
             .collect();
@@ -417,7 +446,7 @@ impl Storage for MemoryStorage {
                 attachments_removed += 1;
                 space_freed += attachment.size;
             }
-            
+
             // Remove chunk mappings
             if let Some(chunk_ids) = att_chunks.remove(&attachment_id) {
                 // Decrement reference counts for chunks
@@ -577,21 +606,24 @@ mod tests {
     #[tokio::test]
     async fn test_account_key_info_storage() {
         let storage = MemoryStorage::new();
-        
+
         // Initially no account key info
         assert!(storage.get_account_key_info().await.unwrap().is_none());
-        
+
         // Store account key info
         let key_info = crate::crypto::AccountKeyInfo {
-            public_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+            public_key: [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 30, 31, 32,
+            ],
             created_at: chrono::Utc::now(),
             expires_at: None,
             version: 1,
             has_private_key: true,
         };
-        
+
         storage.store_account_key_info(&key_info).await.unwrap();
-        
+
         // Retrieve and verify
         let retrieved = storage.get_account_key_info().await.unwrap();
         assert!(retrieved.is_some());
@@ -604,22 +636,28 @@ mod tests {
     #[tokio::test]
     async fn test_shared_account_key_storage() {
         let storage = MemoryStorage::new();
-        
+
         // Initially no shared account key
         assert!(storage.get_shared_account_key().await.unwrap().is_none());
-        
+
         // Store shared account key
         let encrypted_key = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        storage.store_shared_account_key(&encrypted_key).await.unwrap();
-        
+        storage
+            .store_shared_account_key(&encrypted_key)
+            .await
+            .unwrap();
+
         // Retrieve and verify
         let retrieved = storage.get_shared_account_key().await.unwrap();
         assert_eq!(retrieved, Some(encrypted_key));
-        
+
         // Overwrite with new key
         let new_encrypted_key = vec![11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
-        storage.store_shared_account_key(&new_encrypted_key).await.unwrap();
-        
+        storage
+            .store_shared_account_key(&new_encrypted_key)
+            .await
+            .unwrap();
+
         let retrieved = storage.get_shared_account_key().await.unwrap();
         assert_eq!(retrieved, Some(new_encrypted_key));
     }
@@ -627,22 +665,24 @@ mod tests {
     #[tokio::test]
     async fn test_account_key_info_with_expiration() {
         let storage = MemoryStorage::new();
-        
+
         let expires_at = chrono::Utc::now() + chrono::Duration::days(30);
         let key_info = crate::crypto::AccountKeyInfo {
-            public_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+            public_key: [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 30, 31, 32,
+            ],
             created_at: chrono::Utc::now(),
             expires_at: Some(expires_at),
             version: 2,
             has_private_key: false,
         };
-        
+
         storage.store_account_key_info(&key_info).await.unwrap();
-        
+
         let retrieved = storage.get_account_key_info().await.unwrap().unwrap();
         assert_eq!(retrieved.version, 2);
         assert!(!retrieved.has_private_key);
         assert!(retrieved.expires_at.is_some());
     }
-
 }

@@ -9,6 +9,7 @@
 
 use crate::error::{Error, Result};
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use base64::{engine::general_purpose, Engine as _};
 use blake3::Hasher;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
@@ -102,7 +103,12 @@ impl AccountKey {
     }
 
     /// Create account key info with expiration
-    pub fn to_info_with_expiration(&self, version: u64, has_private_key: bool, expires_at: chrono::DateTime<chrono::Utc>) -> AccountKeyInfo {
+    pub fn to_info_with_expiration(
+        &self,
+        version: u64,
+        has_private_key: bool,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> AccountKeyInfo {
         AccountKeyInfo {
             public_key: self.public_key_bytes(),
             created_at: chrono::Utc::now(),
@@ -343,12 +349,13 @@ pub fn protect_vault_key_with_passphrase(vault_key: &VaultKey, passphrase: &str)
     result.extend_from_slice(&nonce);
     result.extend_from_slice(&encrypted_key);
 
-    Ok(base64::encode(result))
+    Ok(general_purpose::STANDARD.encode(result))
 }
 
 /// Recover a vault key from a passphrase-protected string
 pub fn recover_vault_key_from_passphrase(protected: &str, passphrase: &str) -> Result<VaultKey> {
-    let data = base64::decode(protected)
+    let data = general_purpose::STANDARD
+        .decode(protected)
         .map_err(|e| Error::Crypto(format!("Base64 decode failed: {}", e)))?;
 
     if data.len() < 24 + 24 + 32 {

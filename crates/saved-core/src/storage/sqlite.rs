@@ -6,7 +6,6 @@
 //! - Reference counting for garbage collection
 
 use crate::error::{Error, Result};
-use crate::error_recovery::ErrorRecoveryManager;
 use crate::events::Op;
 use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
@@ -18,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 
-use super::trait_impl::{Storage, StorageStats};
 use super::trait_impl::Attachment;
+use super::trait_impl::{Storage, StorageStats};
 
 /// Chunk identifier (BLAKE3 hash of plaintext)
 pub type ChunkId = [u8; 32];
@@ -32,8 +31,6 @@ pub struct SqliteStorage {
     chunks_path: PathBuf,
     /// Reference counts for chunks
     chunk_refs: Mutex<HashMap<ChunkId, u32>>,
-    /// Error recovery manager
-    error_recovery: Arc<Mutex<ErrorRecoveryManager>>,
 }
 
 impl SqliteStorage {
@@ -50,16 +47,15 @@ impl SqliteStorage {
         let db = Connection::open(db_path)?;
 
         // Enable WAL mode and other performance pragmas
-        db.pragma_update(None, "journal_mode", &"WAL")?;
-        db.pragma_update(None, "synchronous", &"NORMAL")?;
-        db.pragma_update(None, "cache_size", &10000i64)?;
-        db.pragma_update(None, "temp_store", &"MEMORY")?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        db.pragma_update(None, "cache_size", 10000i64)?;
+        db.pragma_update(None, "temp_store", "MEMORY")?;
 
         let mut storage = Self {
             db: Arc::new(Mutex::new(db)),
             chunks_path,
             chunk_refs: Mutex::new(HashMap::new()),
-            error_recovery: Arc::new(Mutex::new(ErrorRecoveryManager::new())),
         };
 
         storage.init_schema()?;
@@ -239,7 +235,6 @@ impl SqliteStorage {
 
         Ok(())
     }
-
 }
 
 #[async_trait]
@@ -279,12 +274,14 @@ impl Storage for SqliteStorage {
 
     async fn store_encrypted_operation(&self, envelope: &OpEnvelope) -> Result<()> {
         let db = self.db.lock().unwrap();
-        
+
         // Extract operation ID from header for indexing
         let op_id = if let Some(header) = &envelope.header {
             header.op_id.clone()
         } else {
-            return Err(crate::error::Error::Sync("Missing operation header".to_string()));
+            return Err(crate::error::Error::Sync(
+                "Missing operation header".to_string(),
+            ));
         };
 
         db.execute(
@@ -358,25 +355,23 @@ impl Storage for SqliteStorage {
 
     async fn get_all_encrypted_operations(&self) -> Result<Vec<OpEnvelope>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare(
-            "SELECT header_data, ciphertext FROM encrypted_operations ORDER BY op_id"
-        )?;
+        let mut stmt =
+            db.prepare("SELECT header_data, ciphertext FROM encrypted_operations ORDER BY op_id")?;
 
         let rows = stmt.query_map([], |row| {
             let header_data: Vec<u8> = row.get(0)?;
             let ciphertext: Vec<u8> = row.get(1)?;
 
             let header: Option<crate::protobuf::OpHeader> = bincode::deserialize(&header_data)
-                .map_err(|e| rusqlite::Error::InvalidColumnType(
-                    0,
-                    format!("Header deserialization error: {}", e),
-                    rusqlite::types::Type::Blob,
-                ))?;
+                .map_err(|e| {
+                    rusqlite::Error::InvalidColumnType(
+                        0,
+                        format!("Header deserialization error: {}", e),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
 
-            Ok(OpEnvelope {
-                header,
-                ciphertext,
-            })
+            Ok(OpEnvelope { header, ciphertext })
         })?;
 
         let mut operations = Vec::new();
@@ -620,7 +615,7 @@ impl Storage for SqliteStorage {
             let encrypted_key: Vec<u8> = row.get(0)?;
             Ok(encrypted_key)
         });
-        
+
         match result {
             Ok(key) => Ok(Some(key)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -633,7 +628,7 @@ impl Storage for SqliteStorage {
         let created_at = key_info.created_at.timestamp();
         let expires_at = key_info.expires_at.map(|t| t.timestamp());
         let has_private_key = if key_info.has_private_key { 1 } else { 0 };
-        
+
         db.execute(
             "INSERT OR REPLACE INTO account_key_info (id, public_key, created_at, expires_at, version, has_private_key) VALUES (1, ?, ?, ?, ?, ?)",
             params![key_info.public_key, created_at, expires_at, key_info.version, has_private_key],
@@ -650,19 +645,20 @@ impl Storage for SqliteStorage {
             let expires_at: Option<i64> = row.get(2)?;
             let version: u64 = row.get(3)?;
             let has_private_key: i64 = row.get(4)?;
-            
+
             let mut pub_key_bytes = [0u8; 32];
             pub_key_bytes.copy_from_slice(&public_key[..32]);
-            
+
             Ok(crate::crypto::AccountKeyInfo {
                 public_key: pub_key_bytes,
                 created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default(),
-                expires_at: expires_at.map(|t| chrono::DateTime::from_timestamp(t, 0).unwrap_or_default()),
+                expires_at: expires_at
+                    .map(|t| chrono::DateTime::from_timestamp(t, 0).unwrap_or_default()),
                 version,
                 has_private_key: has_private_key != 0,
             })
         });
-        
+
         match result {
             Ok(info) => Ok(Some(info)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -687,7 +683,7 @@ impl Storage for SqliteStorage {
             let encrypted_key: Vec<u8> = row.get(0)?;
             Ok(encrypted_key)
         });
-        
+
         match result {
             Ok(key) => Ok(Some(key)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -758,7 +754,7 @@ impl Storage for SqliteStorage {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare("SELECT 1 FROM authorized_devices WHERE device_id = ?")?;
         let result = stmt.query_row(params![device_id], |_| Ok(true));
-        
+
         match result {
             Ok(_) => Ok(true),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
@@ -766,12 +762,16 @@ impl Storage for SqliteStorage {
         }
     }
 
-    async fn store_device_certificate(&self, device_cert: &crate::crypto::DeviceCert) -> Result<()> {
+    async fn store_device_certificate(
+        &self,
+        device_cert: &crate::crypto::DeviceCert,
+    ) -> Result<()> {
         let db = self.db.lock().unwrap();
         let created_at = chrono::Utc::now().timestamp();
-        let cert_bytes = bincode::serialize(device_cert)
-            .map_err(|e| crate::error::Error::Crypto(format!("Failed to serialize device cert: {}", e)))?;
-        
+        let cert_bytes = bincode::serialize(device_cert).map_err(|e| {
+            crate::error::Error::Crypto(format!("Failed to serialize device cert: {}", e))
+        })?;
+
         db.execute(
             "INSERT OR REPLACE INTO device_certificate (id, device_cert, created_at) VALUES (1, ?, ?)",
             params![cert_bytes, created_at],
@@ -785,10 +785,16 @@ impl Storage for SqliteStorage {
         let result = stmt.query_row([], |row| {
             let cert_bytes: Vec<u8> = row.get(0)?;
             let device_cert: crate::crypto::DeviceCert = bincode::deserialize(&cert_bytes)
-                .map_err(|_e| rusqlite::Error::InvalidColumnType(0, "device_cert".to_string(), rusqlite::types::Type::Blob))?;
+                .map_err(|_e| {
+                    rusqlite::Error::InvalidColumnType(
+                        0,
+                        "device_cert".to_string(),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
             Ok(device_cert)
         });
-        
+
         match result {
             Ok(cert) => Ok(Some(cert)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -799,7 +805,7 @@ impl Storage for SqliteStorage {
     async fn get_device_key(&self) -> Result<crate::crypto::DeviceKey> {
         // Retrieve the stored device key from SQLite database
         let conn = self.db.lock().unwrap();
-        
+
         let result = conn.query_row(
             "SELECT device_key FROM device_info WHERE id = 1",
             [],
@@ -808,7 +814,7 @@ impl Storage for SqliteStorage {
                 Ok(key_bytes)
             },
         );
-        
+
         match result {
             Ok(key_bytes) => {
                 // Deserialize the stored device key from raw bytes
@@ -824,12 +830,16 @@ impl Storage for SqliteStorage {
                     let mut verifying_key_bytes = [0u8; 32];
                     signing_key_bytes.copy_from_slice(&key_bytes[0..32]);
                     verifying_key_bytes.copy_from_slice(&key_bytes[32..64]);
-                    
+
                     let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_key_bytes);
-                    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
-                        .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
-                    
-                    Ok(crate::crypto::DeviceKey::from_keys(signing_key, verifying_key))
+                    let verifying_key =
+                        ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes)
+                            .map_err(|e| Error::Storage(format!("Invalid verifying key: {}", e)))?;
+
+                    Ok(crate::crypto::DeviceKey::from_keys(
+                        signing_key,
+                        verifying_key,
+                    ))
                 } else {
                     return Err(Error::Storage("Invalid device key length".to_string()));
                 }
@@ -837,36 +847,41 @@ impl Storage for SqliteStorage {
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 // Generate a new device key if none exists
                 let new_device_key = crate::crypto::DeviceKey::generate();
-                
+
                 // Store the new device key as raw bytes (64 bytes: 32 signing + 32 verifying)
                 let mut key_bytes = Vec::new();
                 key_bytes.extend_from_slice(&new_device_key.private_key_bytes());
                 key_bytes.extend_from_slice(&new_device_key.public_key_bytes());
-                
+
                 conn.execute(
                     "INSERT OR REPLACE INTO device_info (id, device_key) VALUES (1, ?)",
                     [key_bytes],
-                ).map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
-                
+                )
+                .map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
+
                 Ok(new_device_key)
             }
-            Err(e) => Err(Error::Storage(format!("Failed to retrieve device key: {}", e))),
+            Err(e) => Err(Error::Storage(format!(
+                "Failed to retrieve device key: {}",
+                e
+            ))),
         }
     }
 
     async fn store_device_key(&self, device_key: &crate::crypto::DeviceKey) -> Result<()> {
         let conn = self.db.lock().unwrap();
-        
+
         // Store the device key as raw bytes (64 bytes: 32 signing + 32 verifying)
         let mut key_bytes = Vec::new();
         key_bytes.extend_from_slice(&device_key.private_key_bytes());
         key_bytes.extend_from_slice(&device_key.public_key_bytes());
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO device_info (id, device_key) VALUES (1, ?)",
             [key_bytes],
-        ).map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
-        
+        )
+        .map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
+
         Ok(())
     }
 
@@ -900,15 +915,23 @@ impl Storage for SqliteStorage {
         })
     }
 
-    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+    async fn store_attachment(
+        &self,
+        message_id: &MessageId,
+        filename: &str,
+        size: u64,
+        file_hash: &[u8; 32],
+        mime_type: Option<String>,
+        chunk_ids: &Vec<[u8; 32]>,
+    ) -> Result<i64> {
         let db = self.db.lock().unwrap();
         let created_at = chrono::Utc::now().timestamp();
         db.execute(
             "INSERT INTO attachments (message_id, filename, size, file_hash, mime_type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
-                message_id.0.as_slice(), 
-                filename, 
-                size as i64, 
+                message_id.0.as_slice(),
+                filename,
+                size as i64,
                 file_hash.as_slice(),
                 mime_type,
                 0i64, // Active status
@@ -941,20 +964,20 @@ impl Storage for SqliteStorage {
             let status: i64 = row.get(6)?;
             let created_at: i64 = row.get(7)?;
             let last_accessed: Option<i64> = row.get(8)?;
-            
+
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&msg_id_bytes[..32]);
-            
+
             let mut file_hash = [0u8; 32];
             file_hash.copy_from_slice(&file_hash_bytes[..32]);
-            
+
             let status = match status {
                 0 => super::trait_impl::AttachmentStatus::Active,
                 1 => super::trait_impl::AttachmentStatus::Deleted,
                 2 => super::trait_impl::AttachmentStatus::Purged,
                 _ => super::trait_impl::AttachmentStatus::Active,
             };
-            
+
             Ok(Attachment {
                 id,
                 message_id: MessageId(id_bytes),
@@ -963,19 +986,29 @@ impl Storage for SqliteStorage {
                 file_hash,
                 mime_type,
                 status,
-                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
-                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+                created_at: chrono::DateTime::from_timestamp(created_at, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| {
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Utc)
+                }),
             })
         })?;
 
         let mut attachments = Vec::new();
-        for row in rows { attachments.push(row?); }
+        for row in rows {
+            attachments.push(row?);
+        }
         Ok(attachments)
     }
 
     async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT chunk_id FROM attachment_chunks WHERE attachment_id = ? ORDER BY ord")?;
+        let mut stmt = db.prepare(
+            "SELECT chunk_id FROM attachment_chunks WHERE attachment_id = ? ORDER BY ord",
+        )?;
         let rows = stmt.query_map(params![attachment_id], |row| {
             let cid: Vec<u8> = row.get(0)?;
             let mut id = [0u8; 32];
@@ -983,7 +1016,9 @@ impl Storage for SqliteStorage {
             Ok(id)
         })?;
         let mut chunk_ids = Vec::new();
-        for row in rows { chunk_ids.push(row?); }
+        for row in rows {
+            chunk_ids.push(row?);
+        }
         Ok(chunk_ids)
     }
 
@@ -1000,20 +1035,20 @@ impl Storage for SqliteStorage {
             let status: i64 = row.get(6)?;
             let created_at: i64 = row.get(7)?;
             let last_accessed: Option<i64> = row.get(8)?;
-            
+
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&msg_id_bytes[..32]);
-            
+
             let mut file_hash = [0u8; 32];
             file_hash.copy_from_slice(&file_hash_bytes[..32]);
-            
+
             let status = match status {
                 0 => super::trait_impl::AttachmentStatus::Active,
                 1 => super::trait_impl::AttachmentStatus::Deleted,
                 2 => super::trait_impl::AttachmentStatus::Purged,
                 _ => super::trait_impl::AttachmentStatus::Active,
             };
-            
+
             Ok(Attachment {
                 id,
                 message_id: MessageId(id_bytes),
@@ -1022,13 +1057,21 @@ impl Storage for SqliteStorage {
                 file_hash,
                 mime_type,
                 status,
-                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
-                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+                created_at: chrono::DateTime::from_timestamp(created_at, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| {
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Utc)
+                }),
             })
         })?;
 
         let mut attachments = Vec::new();
-        for row in rows { attachments.push(row?); }
+        for row in rows {
+            attachments.push(row?);
+        }
         Ok(attachments)
     }
 
@@ -1045,20 +1088,20 @@ impl Storage for SqliteStorage {
             let status: i64 = row.get(6)?;
             let created_at: i64 = row.get(7)?;
             let last_accessed: Option<i64> = row.get(8)?;
-            
+
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&msg_id_bytes[..32]);
-            
+
             let mut file_hash = [0u8; 32];
             file_hash.copy_from_slice(&file_hash_bytes[..32]);
-            
+
             let status = match status {
                 0 => super::trait_impl::AttachmentStatus::Active,
                 1 => super::trait_impl::AttachmentStatus::Deleted,
                 2 => super::trait_impl::AttachmentStatus::Purged,
                 _ => super::trait_impl::AttachmentStatus::Active,
             };
-            
+
             Ok(Attachment {
                 id,
                 message_id: MessageId(id_bytes),
@@ -1067,8 +1110,14 @@ impl Storage for SqliteStorage {
                 file_hash,
                 mime_type,
                 status,
-                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
-                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+                created_at: chrono::DateTime::from_timestamp(created_at, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| {
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Utc)
+                }),
             })
         })?;
 
@@ -1092,20 +1141,20 @@ impl Storage for SqliteStorage {
             let status: i64 = row.get(6)?;
             let created_at: i64 = row.get(7)?;
             let last_accessed: Option<i64> = row.get(8)?;
-            
+
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&msg_id_bytes[..32]);
-            
+
             let mut file_hash = [0u8; 32];
             file_hash.copy_from_slice(&file_hash_bytes[..32]);
-            
+
             let status = match status {
                 0 => super::trait_impl::AttachmentStatus::Active,
                 1 => super::trait_impl::AttachmentStatus::Deleted,
                 2 => super::trait_impl::AttachmentStatus::Purged,
                 _ => super::trait_impl::AttachmentStatus::Active,
             };
-            
+
             Ok(Attachment {
                 id,
                 message_id: MessageId(id_bytes),
@@ -1114,13 +1163,21 @@ impl Storage for SqliteStorage {
                 file_hash,
                 mime_type,
                 status,
-                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
-                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+                created_at: chrono::DateTime::from_timestamp(created_at, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| {
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .unwrap_or_default()
+                        .with_timezone(&chrono::Utc)
+                }),
             })
         })?;
 
         let mut attachments = Vec::new();
-        for row in rows { attachments.push(row?); }
+        for row in rows {
+            attachments.push(row?);
+        }
         Ok(attachments)
     }
 
@@ -1159,11 +1216,11 @@ impl Storage for SqliteStorage {
 
     async fn get_attachment_stats(&self) -> Result<super::trait_impl::AttachmentStats> {
         let db = self.db.lock().unwrap();
-        
+
         // Count total attachments
         let mut stmt = db.prepare("SELECT COUNT(*) FROM attachments")?;
         let total_attachments: usize = stmt.query_row([], |row| row.get(0))?;
-        
+
         // Count by status
         let mut stmt = db.prepare("SELECT status, COUNT(*) FROM attachments GROUP BY status")?;
         let rows = stmt.query_map([], |row| {
@@ -1171,11 +1228,11 @@ impl Storage for SqliteStorage {
             let count: usize = row.get(1)?;
             Ok((status, count))
         })?;
-        
+
         let mut active_attachments = 0;
         let mut deleted_attachments = 0;
         let mut purged_attachments = 0;
-        
+
         for row in rows {
             let (status, count) = row?;
             match status {
@@ -1185,15 +1242,15 @@ impl Storage for SqliteStorage {
                 _ => {}
             }
         }
-        
+
         // Calculate total size
         let mut stmt = db.prepare("SELECT SUM(size) FROM attachments")?;
         let total_size: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
-        
+
         // Count unique files
         let mut stmt = db.prepare("SELECT COUNT(DISTINCT file_hash) FROM attachments")?;
         let unique_files: usize = stmt.query_row([], |row| row.get(0))?;
-        
+
         Ok(super::trait_impl::AttachmentStats {
             total_attachments,
             active_attachments,
@@ -1204,9 +1261,11 @@ impl Storage for SqliteStorage {
         })
     }
 
-    async fn garbage_collect_attachments(&self) -> Result<super::trait_impl::GarbageCollectionStats> {
+    async fn garbage_collect_attachments(
+        &self,
+    ) -> Result<super::trait_impl::GarbageCollectionStats> {
         let db = self.db.lock().unwrap();
-        
+
         // Get purged attachments and their chunks
         let mut stmt = db.prepare("SELECT a.id, a.size, ac.chunk_id FROM attachments a LEFT JOIN attachment_chunks ac ON a.id = ac.attachment_id WHERE a.status = 2")?;
         let rows = stmt.query_map([], |row| {
@@ -1215,16 +1274,16 @@ impl Storage for SqliteStorage {
             let chunk_id: Option<Vec<u8>> = row.get(2)?;
             Ok((attachment_id, size, chunk_id))
         })?;
-        
+
         let mut chunks_to_remove = Vec::new();
         let mut attachments_removed = 0;
         let mut space_freed = 0u64;
-        
+
         for row in rows {
             let (_attachment_id, size, chunk_id) = row?;
             attachments_removed += 1;
             space_freed += size as u64;
-            
+
             if let Some(chunk_id_bytes) = chunk_id {
                 if chunk_id_bytes.len() == 32 {
                     let mut chunk_id_array = [0u8; 32];
@@ -1233,10 +1292,10 @@ impl Storage for SqliteStorage {
                 }
             }
         }
-        
+
         // Remove purged attachments
         db.execute("DELETE FROM attachments WHERE status = 2", [])?;
-        
+
         // Remove chunks (they will be garbage collected by the chunk system)
         let mut chunks_removed = 0;
         for chunk_id in chunks_to_remove {
@@ -1249,7 +1308,7 @@ impl Storage for SqliteStorage {
                 chunks_removed += 1;
             }
         }
-        
+
         Ok(super::trait_impl::GarbageCollectionStats {
             chunks_removed,
             attachments_removed,
@@ -1343,18 +1402,22 @@ mod tests {
         // Device cert roundtrip
         let account_key = crate::crypto::AccountKey::generate();
         let device_key = crate::crypto::DeviceKey::generate();
-        let cert = crate::crypto::DeviceCert::new(device_key.public_key_bytes(), &account_key, None).unwrap();
+        let cert =
+            crate::crypto::DeviceCert::new(device_key.public_key_bytes(), &account_key, None)
+                .unwrap();
         storage.store_device_certificate(&cert).await.unwrap();
         let fetched = storage.get_device_certificate().await.unwrap().unwrap();
         assert_eq!(fetched.device_pubkey, device_key.public_key_bytes());
 
         // Authorized devices
-        storage.store_authorized_device("dev1", b"certbytes").await.unwrap();
+        storage
+            .store_authorized_device("dev1", b"certbytes")
+            .await
+            .unwrap();
         assert!(storage.is_device_authorized("dev1").await.unwrap());
         let list = storage.get_authorized_devices().await.unwrap();
         assert!(list.iter().any(|(id, _)| id == "dev1"));
         storage.revoke_device_authorization("dev1").await.unwrap();
         assert!(!storage.is_device_authorized("dev1").await.unwrap());
     }
-
 }

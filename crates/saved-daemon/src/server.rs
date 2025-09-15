@@ -12,20 +12,22 @@ use tracing::{debug, error, info};
 fn parse_message_id(id_str: &str) -> Result<MessageId, String> {
     // Remove any formatting characters like brackets or spaces
     let cleaned = id_str.trim_matches(|c| c == '[' || c == ']' || c == ' ' || c == ',');
-    
+
     // Split by comma and parse each byte
     let parts: Vec<&str> = cleaned.split(',').collect();
     if parts.len() != 32 {
         return Err("Message ID must have exactly 32 bytes".to_string());
     }
-    
+
     let mut bytes = [0u8; 32];
     for (i, part) in parts.iter().enumerate() {
-        let byte = part.trim().parse::<u8>()
+        let byte = part
+            .trim()
+            .parse::<u8>()
             .map_err(|_| format!("Invalid byte at position {}: {}", i, part))?;
         bytes[i] = byte;
     }
-    
+
     Ok(MessageId(bytes))
 }
 
@@ -33,35 +35,75 @@ fn parse_message_id(id_str: &str) -> Result<MessageId, String> {
 pub enum DaemonRequest {
     Status,
     DeviceList,
-    DeviceInfo { device_id: String },
+    DeviceInfo {
+        device_id: String,
+    },
     DeviceLink,
-    DeviceAccept { qr_payload: String },
-    DeviceRevoke { device_id: String },
+    DeviceAccept {
+        qr_payload: String,
+    },
+    DeviceRevoke {
+        device_id: String,
+    },
     PeerList,
-    PeerConnect { device_id: String, addresses: Vec<String> },
-    PeerDisconnect { device_id: String },
+    PeerConnect {
+        device_id: String,
+        addresses: Vec<String>,
+    },
+    PeerDisconnect {
+        device_id: String,
+    },
     PeerScan,
     MessageList,
-    MessageSend { content: String, attachments: Vec<String> },
-    MessageEdit { message_id: String, new_content: String },
-    MessageDelete { message_id: String },
-    MessagePurge { message_id: String },
+    MessageSend {
+        content: String,
+        attachments: Vec<String>,
+    },
+    MessageEdit {
+        message_id: String,
+        new_content: String,
+    },
+    MessageDelete {
+        message_id: String,
+    },
+    MessagePurge {
+        message_id: String,
+    },
     AttachmentList,
-    AttachmentDownload { attachment_id: i64, output_path: String },
-    AttachmentDelete { attachment_id: i64 },
-    AttachmentPurge { attachment_id: i64 },
+    AttachmentDownload {
+        attachment_id: i64,
+        output_path: String,
+    },
+    AttachmentDelete {
+        attachment_id: i64,
+    },
+    AttachmentPurge {
+        attachment_id: i64,
+    },
     NetworkStatus,
     NetworkAddresses,
     NetworkStart,
     NetworkStop,
     NetworkScan,
-    AccountExport { output_path: String },
-    AccountImport { input_path: String },
+    AccountExport {
+        output_path: String,
+    },
+    AccountImport {
+        input_path: String,
+    },
     InitializeChunkSync,
-    StoreChunk { data: Vec<u8> },
-    GetChunk { chunk_id: String },
-    CheckChunkAvailability { chunk_ids: Vec<String> },
-    FetchMissingChunks { chunk_ids: Vec<String> },
+    StoreChunk {
+        data: Vec<u8>,
+    },
+    GetChunk {
+        chunk_id: String,
+    },
+    CheckChunkAvailability {
+        chunk_ids: Vec<String>,
+    },
+    FetchMissingChunks {
+        chunk_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,31 +120,58 @@ pub enum DaemonResponse {
     },
     DeviceList(Vec<DeviceInfo>),
     DeviceInfo(Option<DeviceInfo>),
-    DeviceLink { qr_payload: String },
-    DeviceAccepted { device_id: String, device_name: String },
+    DeviceLink {
+        qr_payload: String,
+    },
+    DeviceAccepted {
+        device_id: String,
+        device_name: String,
+    },
     PeerList {
         connected: Vec<PeerInfo>,
         discovered: Vec<DiscoveredPeerInfo>,
     },
     MessageList(Vec<MessageInfo>),
-    MessageSent { message_id: String },
-    MessageEdited { message_id: String },
+    MessageSent {
+        message_id: String,
+    },
+    MessageEdited {
+        message_id: String,
+    },
     AttachmentList(Vec<AttachmentInfo>),
-    AttachmentDownloaded { attachment_id: i64, output_path: String },
+    AttachmentDownloaded {
+        attachment_id: i64,
+        output_path: String,
+    },
     NetworkStatus {
         connected_peers: usize,
         discovered_peers: usize,
         active: bool,
     },
     NetworkAddresses(Vec<String>),
-    NetworkScanned { discovered_count: usize },
-    AccountExported { output_path: String },
-    AccountImported { messages_imported: usize },
+    NetworkScanned {
+        discovered_count: usize,
+    },
+    AccountExported {
+        output_path: String,
+    },
+    AccountImported {
+        messages_imported: usize,
+    },
     ChunkSyncInitialized,
-    ChunkStored { chunk_id: String },
-    ChunkData { chunk_id: String, data: Option<Vec<u8>> },
-    ChunkAvailability { availability: std::collections::HashMap<String, bool> },
-    ChunksFetched { fetched_count: usize },
+    ChunkStored {
+        chunk_id: String,
+    },
+    ChunkData {
+        chunk_id: String,
+        data: Option<Vec<u8>>,
+    },
+    ChunkAvailability {
+        availability: std::collections::HashMap<String, bool>,
+    },
+    ChunksFetched {
+        fetched_count: usize,
+    },
     Success,
     Error(String),
 }
@@ -190,7 +259,7 @@ impl DaemonServer {
     async fn handle_client(mut stream: TcpStream, account: &mut AccountHandle) -> Result<()> {
         let mut buffer = vec![0; 4096];
         let n = stream.read(&mut buffer).await?;
-        
+
         if n == 0 {
             return Ok(());
         }
@@ -200,7 +269,7 @@ impl DaemonServer {
 
         let response = Self::process_request(account, request).await;
         let response_json = serde_json::to_vec(&response)?;
-        
+
         stream.write_all(&response_json).await?;
         stream.flush().await?;
 
@@ -223,7 +292,10 @@ impl DaemonServer {
                     device_id: device_info.device_id,
                     device_name: device_info.device_name,
                     authorized: device_info.is_authorized,
-                    last_seen: device_info.last_seen.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                    last_seen: device_info
+                        .last_seen
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string(),
                     connected_peers: connected_count as usize,
                     discovered_peers: discovered_peers.len(),
                     total_messages: messages.len(),
@@ -269,7 +341,10 @@ impl DaemonServer {
                         device_name: device_info.device_name,
                         connection_state,
                         health,
-                        last_seen: device_info.last_seen.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                        last_seen: device_info
+                            .last_seen
+                            .format("%Y-%m-%d %H:%M:%S UTC")
+                            .to_string(),
                     });
                 }
 
@@ -282,7 +357,10 @@ impl DaemonServer {
                     })
                     .collect();
 
-                DaemonResponse::PeerList { connected, discovered }
+                DaemonResponse::PeerList {
+                    connected,
+                    discovered,
+                }
             }
             DaemonRequest::MessageList => {
                 let messages = account.list_messages().await.unwrap_or_default();
@@ -298,8 +376,12 @@ impl DaemonServer {
                     .collect();
                 DaemonResponse::MessageList(message_infos)
             }
-            DaemonRequest::MessageSend { content, attachments } => {
-                let attachment_paths: Vec<std::path::PathBuf> = attachments.into_iter().map(|p| p.into()).collect();
+            DaemonRequest::MessageSend {
+                content,
+                attachments,
+            } => {
+                let attachment_paths: Vec<std::path::PathBuf> =
+                    attachments.into_iter().map(|p| p.into()).collect();
                 match account.create_message(content, attachment_paths).await {
                     Ok(message_id) => DaemonResponse::MessageSent {
                         message_id: format!("{:?}", message_id),
@@ -316,25 +398,23 @@ impl DaemonServer {
                     active: connected_count > 0 || !discovered_peers.is_empty(),
                 }
             }
-            DaemonRequest::DeviceLink => {
-                match account.make_linking_qr().await {
-                    Ok(qr_payload) => DaemonResponse::DeviceLink {
-                        qr_payload: serde_json::to_string(&qr_payload).unwrap_or_default(),
-                    },
-                    Err(e) => DaemonResponse::Error(format!("Failed to create linking QR: {}", e)),
-                }
-            }
+            DaemonRequest::DeviceLink => match account.make_linking_qr().await {
+                Ok(qr_payload) => DaemonResponse::DeviceLink {
+                    qr_payload: serde_json::to_string(&qr_payload).unwrap_or_default(),
+                },
+                Err(e) => DaemonResponse::Error(format!("Failed to create linking QR: {}", e)),
+            },
             DaemonRequest::DeviceAccept { qr_payload } => {
                 match serde_json::from_str::<saved_core::QrPayload>(&qr_payload) {
-                    Ok(payload) => {
-                        match account.accept_link(payload).await {
-                            Ok(device_info) => DaemonResponse::DeviceAccepted {
-                                device_id: device_info.device_id,
-                                device_name: device_info.device_name,
-                            },
-                            Err(e) => DaemonResponse::Error(format!("Failed to accept device link: {}", e)),
+                    Ok(payload) => match account.accept_link(payload).await {
+                        Ok(device_info) => DaemonResponse::DeviceAccepted {
+                            device_id: device_info.device_id,
+                            device_name: device_info.device_name,
+                        },
+                        Err(e) => {
+                            DaemonResponse::Error(format!("Failed to accept device link: {}", e))
                         }
-                    }
+                    },
                     Err(e) => DaemonResponse::Error(format!("Invalid QR payload: {}", e)),
                 }
             }
@@ -344,20 +424,19 @@ impl DaemonServer {
                     Err(e) => DaemonResponse::Error(format!("Failed to revoke device: {}", e)),
                 }
             }
-            DaemonRequest::PeerScan => {
-                match account.scan_local_network().await {
-                    Ok(discovered) => DaemonResponse::NetworkScanned {
-                        discovered_count: discovered.len(),
-                    },
-                    Err(e) => DaemonResponse::Error(format!("Failed to scan for peers: {}", e)),
-                }
-            }
-            DaemonRequest::PeerConnect { device_id, addresses } => {
-                match account.connect_to_peer(device_id, addresses).await {
-                    Ok(_) => DaemonResponse::Success,
-                    Err(e) => DaemonResponse::Error(format!("Failed to connect to peer: {}", e)),
-                }
-            }
+            DaemonRequest::PeerScan => match account.scan_local_network().await {
+                Ok(discovered) => DaemonResponse::NetworkScanned {
+                    discovered_count: discovered.len(),
+                },
+                Err(e) => DaemonResponse::Error(format!("Failed to scan for peers: {}", e)),
+            },
+            DaemonRequest::PeerConnect {
+                device_id,
+                addresses,
+            } => match account.connect_to_peer(device_id, addresses).await {
+                Ok(_) => DaemonResponse::Success,
+                Err(e) => DaemonResponse::Error(format!("Failed to connect to peer: {}", e)),
+            },
             DaemonRequest::PeerDisconnect { device_id } => {
                 // Note: AccountHandle doesn't have a direct disconnect method, but we can revoke the device
                 match account.revoke_device(&device_id).await {
@@ -365,39 +444,30 @@ impl DaemonServer {
                     Err(e) => DaemonResponse::Error(format!("Failed to disconnect peer: {}", e)),
                 }
             }
-            DaemonRequest::MessageEdit { message_id, new_content } => {
-                match parse_message_id(&message_id) {
-                    Ok(msg_id) => {
-                        match account.edit_message(msg_id, new_content).await {
-                            Ok(_) => DaemonResponse::MessageEdited { message_id },
-                            Err(e) => DaemonResponse::Error(format!("Failed to edit message: {}", e)),
-                        }
-                    }
-                    Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
-                }
-            }
-            DaemonRequest::MessageDelete { message_id } => {
-                match parse_message_id(&message_id) {
-                    Ok(msg_id) => {
-                        match account.delete_message(msg_id).await {
-                            Ok(_) => DaemonResponse::Success,
-                            Err(e) => DaemonResponse::Error(format!("Failed to delete message: {}", e)),
-                        }
-                    }
-                    Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
-                }
-            }
-            DaemonRequest::MessagePurge { message_id } => {
-                match parse_message_id(&message_id) {
-                    Ok(msg_id) => {
-                        match account.purge_message(msg_id).await {
-                            Ok(_) => DaemonResponse::Success,
-                            Err(e) => DaemonResponse::Error(format!("Failed to purge message: {}", e)),
-                        }
-                    }
-                    Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
-                }
-            }
+            DaemonRequest::MessageEdit {
+                message_id,
+                new_content,
+            } => match parse_message_id(&message_id) {
+                Ok(msg_id) => match account.edit_message(msg_id, new_content).await {
+                    Ok(_) => DaemonResponse::MessageEdited { message_id },
+                    Err(e) => DaemonResponse::Error(format!("Failed to edit message: {}", e)),
+                },
+                Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
+            },
+            DaemonRequest::MessageDelete { message_id } => match parse_message_id(&message_id) {
+                Ok(msg_id) => match account.delete_message(msg_id).await {
+                    Ok(_) => DaemonResponse::Success,
+                    Err(e) => DaemonResponse::Error(format!("Failed to delete message: {}", e)),
+                },
+                Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
+            },
+            DaemonRequest::MessagePurge { message_id } => match parse_message_id(&message_id) {
+                Ok(msg_id) => match account.purge_message(msg_id).await {
+                    Ok(_) => DaemonResponse::Success,
+                    Err(e) => DaemonResponse::Error(format!("Failed to purge message: {}", e)),
+                },
+                Err(_) => DaemonResponse::Error("Invalid message ID format".to_string()),
+            },
             DaemonRequest::AttachmentList => {
                 // Get all attachments from storage
                 let storage = account.sync_manager_mut().storage_mut();
@@ -412,8 +482,13 @@ impl DaemonServer {
                                 size: a.size,
                                 mime_type: a.mime_type,
                                 status: format!("{:?}", a.status),
-                                created_at: a.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-                                last_accessed: a.last_accessed.map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+                                created_at: a
+                                    .created_at
+                                    .format("%Y-%m-%d %H:%M:%S UTC")
+                                    .to_string(),
+                                last_accessed: a
+                                    .last_accessed
+                                    .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
                             })
                             .collect();
                         DaemonResponse::AttachmentList(attachment_infos)
@@ -421,11 +496,14 @@ impl DaemonServer {
                     Err(e) => DaemonResponse::Error(format!("Failed to list attachments: {}", e)),
                 }
             }
-            DaemonRequest::AttachmentDownload { attachment_id, output_path } => {
+            DaemonRequest::AttachmentDownload {
+                attachment_id,
+                output_path,
+            } => {
                 // Download attachment to specified path
                 let storage = account.sync_manager_mut().storage_mut();
                 match storage.get_attachment_by_id(attachment_id).await {
-                    Ok(Some(attachment)) => {
+                    Ok(Some(_attachment)) => {
                         // Get chunks for this attachment
                         match storage.get_attachment_chunks(attachment_id).await {
                             Ok(chunk_ids) => {
@@ -433,23 +511,45 @@ impl DaemonServer {
                                 let mut file_data = Vec::new();
                                 for chunk_id in chunk_ids {
                                     match storage.get_chunk(&chunk_id).await {
-                                        Ok(Some(chunk_data)) => file_data.extend_from_slice(&chunk_data),
-                                        Ok(None) => return DaemonResponse::Error("Chunk not found".to_string()),
-                                        Err(e) => return DaemonResponse::Error(format!("Failed to get chunk: {}", e)),
+                                        Ok(Some(chunk_data)) => {
+                                            file_data.extend_from_slice(&chunk_data)
+                                        }
+                                        Ok(None) => {
+                                            return DaemonResponse::Error(
+                                                "Chunk not found".to_string(),
+                                            )
+                                        }
+                                        Err(e) => {
+                                            return DaemonResponse::Error(format!(
+                                                "Failed to get chunk: {}",
+                                                e
+                                            ))
+                                        }
                                     }
                                 }
-                                
+
                                 // Write to output file
                                 match tokio::fs::write(&output_path, &file_data).await {
                                     Ok(_) => {
                                         // Update access time
-                                        let _ = storage.update_attachment_access_time(attachment_id).await;
-                                        DaemonResponse::AttachmentDownloaded { attachment_id, output_path }
+                                        let _ = storage
+                                            .update_attachment_access_time(attachment_id)
+                                            .await;
+                                        DaemonResponse::AttachmentDownloaded {
+                                            attachment_id,
+                                            output_path,
+                                        }
                                     }
-                                    Err(e) => DaemonResponse::Error(format!("Failed to write file: {}", e)),
+                                    Err(e) => DaemonResponse::Error(format!(
+                                        "Failed to write file: {}",
+                                        e
+                                    )),
                                 }
                             }
-                            Err(e) => DaemonResponse::Error(format!("Failed to get attachment chunks: {}", e)),
+                            Err(e) => DaemonResponse::Error(format!(
+                                "Failed to get attachment chunks: {}",
+                                e
+                            )),
                         }
                     }
                     Ok(None) => DaemonResponse::Error("Attachment not found".to_string()),
@@ -474,39 +574,42 @@ impl DaemonServer {
                 // Get network addresses from network manager
                 // Note: AccountHandle doesn't expose network manager directly
                 // For now, return a placeholder response
-                DaemonResponse::NetworkAddresses(vec!["Network addresses not available via public API".to_string()])
+                DaemonResponse::NetworkAddresses(vec![
+                    "Network addresses not available via public API".to_string(),
+                ])
             }
-            DaemonRequest::NetworkStart => {
-                match account.start_network().await {
-                    Ok(_) => DaemonResponse::Success,
-                    Err(e) => DaemonResponse::Error(format!("Failed to start network: {}", e)),
-                }
-            }
+            DaemonRequest::NetworkStart => match account.start_network().await {
+                Ok(_) => DaemonResponse::Success,
+                Err(e) => DaemonResponse::Error(format!("Failed to start network: {}", e)),
+            },
             DaemonRequest::NetworkStop => {
                 // Note: AccountHandle doesn't have a direct network stop method
                 // We can simulate this by clearing the network manager
                 DaemonResponse::Success
             }
-            DaemonRequest::NetworkScan => {
-                match account.scan_local_network().await {
-                    Ok(discovered) => DaemonResponse::NetworkScanned {
-                        discovered_count: discovered.len(),
-                    },
-                    Err(e) => DaemonResponse::Error(format!("Failed to scan network: {}", e)),
-                }
-            }
+            DaemonRequest::NetworkScan => match account.scan_local_network().await {
+                Ok(discovered) => DaemonResponse::NetworkScanned {
+                    discovered_count: discovered.len(),
+                },
+                Err(e) => DaemonResponse::Error(format!("Failed to scan network: {}", e)),
+            },
             DaemonRequest::AccountExport { output_path } => {
                 // Export account data to JSON
                 let messages = account.list_messages().await.unwrap_or_default();
                 let devices = account.list_authorized_devices().await.unwrap_or_default();
-                
+
                 let export_data = serde_json::json!({
                     "messages": messages,
                     "devices": devices,
                     "exported_at": chrono::Utc::now(),
                 });
-                
-                match tokio::fs::write(&output_path, serde_json::to_string_pretty(&export_data).unwrap()).await {
+
+                match tokio::fs::write(
+                    &output_path,
+                    serde_json::to_string_pretty(&export_data).unwrap(),
+                )
+                .await
+                {
                     Ok(_) => DaemonResponse::AccountExported { output_path },
                     Err(e) => DaemonResponse::Error(format!("Failed to export account: {}", e)),
                 }
@@ -514,36 +617,33 @@ impl DaemonServer {
             DaemonRequest::AccountImport { input_path } => {
                 // Import account data from JSON
                 match tokio::fs::read_to_string(&input_path).await {
-                    Ok(data) => {
-                        match serde_json::from_str::<serde_json::Value>(&data) {
-                            Ok(json) => {
-                                let messages_imported = if let Some(messages) = json.get("messages") {
-                                    messages.as_array().map(|arr| arr.len()).unwrap_or(0)
-                                } else {
-                                    0
-                                };
-                                DaemonResponse::AccountImported { messages_imported }
-                            }
-                            Err(e) => DaemonResponse::Error(format!("Invalid JSON format: {}", e)),
+                    Ok(data) => match serde_json::from_str::<serde_json::Value>(&data) {
+                        Ok(json) => {
+                            let messages_imported = if let Some(messages) = json.get("messages") {
+                                messages.as_array().map(|arr| arr.len()).unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            DaemonResponse::AccountImported { messages_imported }
                         }
-                    }
+                        Err(e) => DaemonResponse::Error(format!("Invalid JSON format: {}", e)),
+                    },
                     Err(e) => DaemonResponse::Error(format!("Failed to read import file: {}", e)),
                 }
             }
-            DaemonRequest::InitializeChunkSync => {
-                match account.initialize_chunk_sync().await {
-                    Ok(_) => DaemonResponse::ChunkSyncInitialized,
-                    Err(e) => DaemonResponse::Error(format!("Failed to initialize chunk sync: {}", e)),
-                }
-            }
-            DaemonRequest::StoreChunk { data } => {
-                match account.store_chunk(&data).await {
-                    Ok(chunk_id) => DaemonResponse::ChunkStored { 
-                        chunk_id: format!("{:02x?}", chunk_id).replace(" ", "").replace("[", "").replace("]", "")
-                    },
-                    Err(e) => DaemonResponse::Error(format!("Failed to store chunk: {}", e)),
-                }
-            }
+            DaemonRequest::InitializeChunkSync => match account.initialize_chunk_sync().await {
+                Ok(_) => DaemonResponse::ChunkSyncInitialized,
+                Err(e) => DaemonResponse::Error(format!("Failed to initialize chunk sync: {}", e)),
+            },
+            DaemonRequest::StoreChunk { data } => match account.store_chunk(&data).await {
+                Ok(chunk_id) => DaemonResponse::ChunkStored {
+                    chunk_id: format!("{:02x?}", chunk_id)
+                        .replace(" ", "")
+                        .replace("[", "")
+                        .replace("]", ""),
+                },
+                Err(e) => DaemonResponse::Error(format!("Failed to store chunk: {}", e)),
+            },
             DaemonRequest::GetChunk { chunk_id } => {
                 // Parse chunk ID from string
                 let chunk_id_bytes = if chunk_id.len() == 64 {
@@ -559,12 +659,9 @@ impl DaemonServer {
                 } else {
                     return DaemonResponse::Error("Chunk ID must be 64 hex characters".to_string());
                 };
-                
+
                 match account.get_chunk(&chunk_id_bytes).await {
-                    Ok(data) => DaemonResponse::ChunkData { 
-                        chunk_id,
-                        data
-                    },
+                    Ok(data) => DaemonResponse::ChunkData { chunk_id, data },
                     Err(e) => DaemonResponse::Error(format!("Failed to get chunk: {}", e)),
                 }
             }
@@ -579,24 +676,42 @@ impl DaemonServer {
                                 chunk_id_array.copy_from_slice(&bytes);
                                 chunk_id_bytes.push(chunk_id_array);
                             }
-                            _ => return DaemonResponse::Error(format!("Invalid chunk ID format: {}", chunk_id)),
+                            _ => {
+                                return DaemonResponse::Error(format!(
+                                    "Invalid chunk ID format: {}",
+                                    chunk_id
+                                ))
+                            }
                         }
                     } else {
-                        return DaemonResponse::Error(format!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                        return DaemonResponse::Error(format!(
+                            "Chunk ID must be 64 hex characters: {}",
+                            chunk_id
+                        ));
                     }
                 }
-                
+
                 match account.check_chunk_availability(&chunk_id_bytes).await {
                     Ok(availability) => {
                         let mut availability_map = std::collections::HashMap::new();
                         for (i, chunk_id) in chunk_ids.iter().enumerate() {
                             if i < chunk_id_bytes.len() {
-                                availability_map.insert(chunk_id.clone(), availability.get(&chunk_id_bytes[i]).copied().unwrap_or(false));
+                                availability_map.insert(
+                                    chunk_id.clone(),
+                                    availability
+                                        .get(&chunk_id_bytes[i])
+                                        .copied()
+                                        .unwrap_or(false),
+                                );
                             }
                         }
-                        DaemonResponse::ChunkAvailability { availability: availability_map }
+                        DaemonResponse::ChunkAvailability {
+                            availability: availability_map,
+                        }
                     }
-                    Err(e) => DaemonResponse::Error(format!("Failed to check chunk availability: {}", e)),
+                    Err(e) => {
+                        DaemonResponse::Error(format!("Failed to check chunk availability: {}", e))
+                    }
                 }
             }
             DaemonRequest::FetchMissingChunks { chunk_ids } => {
@@ -610,16 +725,28 @@ impl DaemonServer {
                                 chunk_id_array.copy_from_slice(&bytes);
                                 chunk_id_bytes.push(chunk_id_array);
                             }
-                            _ => return DaemonResponse::Error(format!("Invalid chunk ID format: {}", chunk_id)),
+                            _ => {
+                                return DaemonResponse::Error(format!(
+                                    "Invalid chunk ID format: {}",
+                                    chunk_id
+                                ))
+                            }
                         }
                     } else {
-                        return DaemonResponse::Error(format!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                        return DaemonResponse::Error(format!(
+                            "Chunk ID must be 64 hex characters: {}",
+                            chunk_id
+                        ));
                     }
                 }
-                
+
                 match account.fetch_missing_chunks(&chunk_id_bytes).await {
-                    Ok(_) => DaemonResponse::ChunksFetched { fetched_count: chunk_ids.len() },
-                    Err(e) => DaemonResponse::Error(format!("Failed to fetch missing chunks: {}", e)),
+                    Ok(_) => DaemonResponse::ChunksFetched {
+                        fetched_count: chunk_ids.len(),
+                    },
+                    Err(e) => {
+                        DaemonResponse::Error(format!("Failed to fetch missing chunks: {}", e))
+                    }
                 }
             }
         }

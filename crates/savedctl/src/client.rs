@@ -10,35 +10,75 @@ use tokio::net::TcpStream;
 pub enum DaemonRequest {
     Status,
     DeviceList,
-    DeviceInfo { device_id: String },
+    DeviceInfo {
+        device_id: String,
+    },
     DeviceLink,
-    DeviceAccept { qr_payload: String },
-    DeviceRevoke { device_id: String },
+    DeviceAccept {
+        qr_payload: String,
+    },
+    DeviceRevoke {
+        device_id: String,
+    },
     PeerList,
-    PeerConnect { device_id: String, addresses: Vec<String> },
-    PeerDisconnect { device_id: String },
+    PeerConnect {
+        device_id: String,
+        addresses: Vec<String>,
+    },
+    PeerDisconnect {
+        device_id: String,
+    },
     PeerScan,
     MessageList,
-    MessageSend { content: String, attachments: Vec<String> },
-    MessageEdit { message_id: String, new_content: String },
-    MessageDelete { message_id: String },
-    MessagePurge { message_id: String },
+    MessageSend {
+        content: String,
+        attachments: Vec<String>,
+    },
+    MessageEdit {
+        message_id: String,
+        new_content: String,
+    },
+    MessageDelete {
+        message_id: String,
+    },
+    MessagePurge {
+        message_id: String,
+    },
     AttachmentList,
-    AttachmentDownload { attachment_id: i64, output_path: String },
-    AttachmentDelete { attachment_id: i64 },
-    AttachmentPurge { attachment_id: i64 },
+    AttachmentDownload {
+        attachment_id: i64,
+        output_path: String,
+    },
+    AttachmentDelete {
+        attachment_id: i64,
+    },
+    AttachmentPurge {
+        attachment_id: i64,
+    },
     NetworkStatus,
     NetworkAddresses,
     NetworkStart,
     NetworkStop,
     NetworkScan,
-    AccountExport { output_path: String },
-    AccountImport { input_path: String },
+    AccountExport {
+        output_path: String,
+    },
+    AccountImport {
+        input_path: String,
+    },
     InitializeChunkSync,
-    StoreChunk { data: Vec<u8> },
-    GetChunk { chunk_id: String },
-    CheckChunkAvailability { chunk_ids: Vec<String> },
-    FetchMissingChunks { chunk_ids: Vec<String> },
+    StoreChunk {
+        data: Vec<u8>,
+    },
+    GetChunk {
+        chunk_id: String,
+    },
+    CheckChunkAvailability {
+        chunk_ids: Vec<String>,
+    },
+    FetchMissingChunks {
+        chunk_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,31 +95,58 @@ pub enum DaemonResponse {
     },
     DeviceList(Vec<DeviceInfo>),
     DeviceInfo(Option<DeviceInfo>),
-    DeviceLink { qr_payload: String },
-    DeviceAccepted { device_id: String, device_name: String },
+    DeviceLink {
+        qr_payload: String,
+    },
+    DeviceAccepted {
+        device_id: String,
+        device_name: String,
+    },
     PeerList {
         connected: Vec<PeerInfo>,
         discovered: Vec<DiscoveredPeerInfo>,
     },
     MessageList(Vec<MessageInfo>),
-    MessageSent { message_id: String },
-    MessageEdited { message_id: String },
+    MessageSent {
+        message_id: String,
+    },
+    MessageEdited {
+        message_id: String,
+    },
     AttachmentList(Vec<AttachmentInfo>),
-    AttachmentDownloaded { attachment_id: i64, output_path: String },
+    AttachmentDownloaded {
+        attachment_id: i64,
+        output_path: String,
+    },
     NetworkStatus {
         connected_peers: usize,
         discovered_peers: usize,
         active: bool,
     },
     NetworkAddresses(Vec<String>),
-    NetworkScanned { discovered_count: usize },
-    AccountExported { output_path: String },
-    AccountImported { messages_imported: usize },
+    NetworkScanned {
+        discovered_count: usize,
+    },
+    AccountExported {
+        output_path: String,
+    },
+    AccountImported {
+        messages_imported: usize,
+    },
     ChunkSyncInitialized,
-    ChunkStored { chunk_id: String },
-    ChunkData { chunk_id: String, data: Option<Vec<u8>> },
-    ChunkAvailability { availability: std::collections::HashMap<String, bool> },
-    ChunksFetched { fetched_count: usize },
+    ChunkStored {
+        chunk_id: String,
+    },
+    ChunkData {
+        chunk_id: String,
+        data: Option<Vec<u8>>,
+    },
+    ChunkAvailability {
+        availability: std::collections::HashMap<String, bool>,
+    },
+    ChunksFetched {
+        fetched_count: usize,
+    },
     Success,
     Error(String),
 }
@@ -142,14 +209,14 @@ impl DaemonClient {
     pub async fn send_request(&self, request: DaemonRequest) -> Result<DaemonResponse> {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.control_port));
         let mut stream = TcpStream::connect(addr).await?;
-        
+
         let request_json = serde_json::to_vec(&request)?;
         stream.write_all(&request_json).await?;
         stream.flush().await?;
 
         let mut buffer = vec![0; 4096];
         let n = stream.read(&mut buffer).await?;
-        
+
         if n == 0 {
             return Err(anyhow::anyhow!("No response from daemon"));
         }

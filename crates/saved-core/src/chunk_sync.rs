@@ -6,7 +6,7 @@
 use crate::crypto::{blake3_hash, derive_chunk_key, VaultKey};
 use crate::error::{Error, Result};
 use crate::networking::NetworkManager;
-use crate::storage::{Storage, sqlite::ChunkId};
+use crate::storage::{sqlite::ChunkId, Storage};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -117,7 +117,7 @@ impl ChunkSyncManager {
     pub async fn store_chunk(&self, data: &[u8]) -> Result<ChunkId> {
         // Generate chunk ID from content hash
         let chunk_id = blake3_hash(data);
-        
+
         // Check if chunk already exists
         if self.storage.has_chunk(&chunk_id).await? {
             return Ok(chunk_id);
@@ -125,13 +125,13 @@ impl ChunkSyncManager {
 
         // Derive encryption key from content hash (convergent encryption)
         let encryption_key = derive_chunk_key(&self.vault_key, &chunk_id)?;
-        
+
         // Encrypt the chunk data
         let encrypted_data = self.encrypt_chunk_data(data, &encryption_key)?;
-        
+
         // Store the encrypted chunk
         self.storage.store_chunk(&chunk_id, &encrypted_data).await?;
-        
+
         // Update metadata
         let metadata = ChunkMetadata {
             chunk_id,
@@ -140,10 +140,10 @@ impl ChunkSyncManager {
             is_available: true,
             available_peers: HashSet::new(),
         };
-        
+
         let mut metadata_cache = self.chunk_metadata.write().await;
         metadata_cache.insert(chunk_id, metadata);
-        
+
         Ok(chunk_id)
     }
 
@@ -155,28 +155,34 @@ impl ChunkSyncManager {
         }
 
         // Get encrypted data
-        let encrypted_data = self.storage.get_chunk(chunk_id).await?
+        let encrypted_data = self
+            .storage
+            .get_chunk(chunk_id)
+            .await?
             .ok_or_else(|| Error::Storage("Chunk not found".to_string()))?;
 
         // Derive decryption key
         let decryption_key = derive_chunk_key(&self.vault_key, chunk_id)?;
-        
+
         // Decrypt the chunk data
         let decrypted_data = self.decrypt_chunk_data(&encrypted_data, &decryption_key)?;
-        
+
         Ok(Some(decrypted_data))
     }
 
     /// Check chunk availability across peers
-    pub async fn check_chunk_availability(&self, chunk_ids: &[ChunkId]) -> Result<HashMap<ChunkId, bool>> {
+    pub async fn check_chunk_availability(
+        &self,
+        chunk_ids: &[ChunkId],
+    ) -> Result<HashMap<ChunkId, bool>> {
         let mut availability = HashMap::new();
-        
+
         // Check local availability first
         for chunk_id in chunk_ids {
             let is_available = self.storage.has_chunk(chunk_id).await?;
             availability.insert(*chunk_id, is_available);
         }
-        
+
         // Request availability from peers
         if let Some(_network_manager) = &self.network_manager {
             let request = ChunkSyncRequest {
@@ -184,15 +190,18 @@ impl ChunkSyncManager {
                 peer_id: "local".to_string(), // TODO: Get actual peer ID
                 timestamp: chrono::Utc::now(),
             };
-            
+
             // Send availability request via gossipsub
             let _data = serde_json::to_vec(&request)
                 .map_err(|e| Error::Storage(format!("Failed to serialize request: {}", e)))?;
-            
+
             // TODO: Send via network manager
-            println!("Requesting chunk availability for {} chunks", chunk_ids.len());
+            println!(
+                "Requesting chunk availability for {} chunks",
+                chunk_ids.len()
+            );
         }
-        
+
         Ok(availability)
     }
 
@@ -205,11 +214,11 @@ impl ChunkSyncManager {
                 missing_chunks.push(*chunk_id);
             }
         }
-        
+
         if missing_chunks.is_empty() {
             return Ok(());
         }
-        
+
         // Request chunks from peers
         if let Some(_network_manager) = &self.network_manager {
             let request = ChunkFetchRequest {
@@ -217,72 +226,83 @@ impl ChunkSyncManager {
                 peer_id: "local".to_string(), // TODO: Get actual peer ID
                 timestamp: chrono::Utc::now(),
             };
-            
+
             // Send fetch request via gossipsub
             let _data = serde_json::to_vec(&request)
                 .map_err(|e| Error::Storage(format!("Failed to serialize request: {}", e)))?;
-            
+
             // TODO: Send via network manager
-            println!("Fetching {} missing chunks from peers", missing_chunks.len());
+            println!(
+                "Fetching {} missing chunks from peers",
+                missing_chunks.len()
+            );
         }
-        
+
         Ok(())
     }
 
     /// Handle chunk availability request from peer
-    pub async fn handle_availability_request(&self, request: ChunkSyncRequest) -> Result<ChunkSyncResponse> {
+    pub async fn handle_availability_request(
+        &self,
+        request: ChunkSyncRequest,
+    ) -> Result<ChunkSyncResponse> {
         let mut availability = Vec::new();
-        
+
         for chunk_id in &request.chunk_ids {
             let is_available = self.storage.has_chunk(chunk_id).await?;
             availability.push(is_available);
         }
-        
+
         let response = ChunkSyncResponse {
             availability,
             peer_id: "local".to_string(), // TODO: Get actual peer ID
             timestamp: chrono::Utc::now(),
         };
-        
+
         // Update peer availability tracking
         let mut peer_availability = self.peer_availability.write().await;
-        let peer_chunks = peer_availability.entry(request.peer_id.clone()).or_insert_with(HashSet::new);
-        
+        let peer_chunks = peer_availability
+            .entry(request.peer_id.clone())
+            .or_insert_with(HashSet::new);
+
         for (i, chunk_id) in request.chunk_ids.iter().enumerate() {
             if i < response.availability.len() && response.availability[i] {
                 peer_chunks.insert(*chunk_id);
             }
         }
-        
+
         Ok(response)
     }
 
     /// Handle chunk fetch request from peer
-    pub async fn handle_fetch_request(&self, request: ChunkFetchRequest) -> Result<ChunkFetchResponse> {
+    pub async fn handle_fetch_request(
+        &self,
+        request: ChunkFetchRequest,
+    ) -> Result<ChunkFetchResponse> {
         let mut chunks = Vec::new();
-        
+
         for chunk_id in &request.chunk_ids {
             if let Some(encrypted_data) = self.storage.get_chunk(chunk_id).await? {
                 // Derive encryption key for this chunk
                 let _encryption_key = derive_chunk_key(&self.vault_key, chunk_id)?;
-                
+
                 // Create chunk data with nonce (for now, use a placeholder)
                 let chunk_data = ChunkData {
                     chunk_id: *chunk_id,
                     encrypted_data,
                     nonce: vec![0u8; 24], // TODO: Store actual nonce
                 };
-                
+
                 chunks.push(chunk_data);
             }
         }
-        
+
         let response = ChunkFetchResponse {
             chunks,
             peer_id: "local".to_string(), // TODO: Get actual peer ID
             timestamp: chrono::Utc::now(),
         };
-        
+
         Ok(response)
     }
 
@@ -290,8 +310,10 @@ impl ChunkSyncManager {
     pub async fn handle_fetch_response(&self, response: ChunkFetchResponse) -> Result<()> {
         for chunk_data in &response.chunks {
             // Store the encrypted chunk data
-            self.storage.store_chunk(&chunk_data.chunk_id, &chunk_data.encrypted_data).await?;
-            
+            self.storage
+                .store_chunk(&chunk_data.chunk_id, &chunk_data.encrypted_data)
+                .await?;
+
             // Update metadata
             let mut metadata_cache = self.chunk_metadata.write().await;
             if let Some(metadata) = metadata_cache.get_mut(&chunk_data.chunk_id) {
@@ -312,7 +334,7 @@ impl ChunkSyncManager {
                 metadata_cache.insert(chunk_data.chunk_id, metadata);
             }
         }
-        
+
         Ok(())
     }
 
@@ -346,13 +368,13 @@ impl ChunkSyncManager {
     pub async fn get_chunk_peers(&self, chunk_id: &ChunkId) -> Result<HashSet<String>> {
         let peer_availability = self.peer_availability.read().await;
         let mut peers = HashSet::new();
-        
+
         for (peer_id, peer_chunks) in peer_availability.iter() {
             if peer_chunks.contains(chunk_id) {
                 peers.insert(peer_id.clone());
             }
         }
-        
+
         Ok(peers)
     }
 
@@ -360,9 +382,9 @@ impl ChunkSyncManager {
     pub async fn cleanup_old_metadata(&self, max_age_days: u64) -> Result<()> {
         let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
         let mut metadata_cache = self.chunk_metadata.write().await;
-        
+
         metadata_cache.retain(|_, metadata| metadata.created_at > cutoff);
-        
+
         Ok(())
     }
 }
@@ -377,10 +399,10 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let vault_key = [1u8; 32];
         let manager = ChunkSyncManager::new(storage, vault_key);
-        
+
         let test_data = b"Hello, World!";
         let chunk_id = manager.store_chunk(test_data).await.unwrap();
-        
+
         let retrieved_data = manager.get_chunk(&chunk_id).await.unwrap().unwrap();
         assert_eq!(test_data, retrieved_data.as_slice());
     }
@@ -390,10 +412,10 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let vault_key = [1u8; 32];
         let manager = ChunkSyncManager::new(storage, vault_key);
-        
+
         let test_data = b"Test chunk data";
         let chunk_id = manager.store_chunk(test_data).await.unwrap();
-        
+
         let availability = manager.check_chunk_availability(&[chunk_id]).await.unwrap();
         assert!(availability.get(&chunk_id).unwrap());
     }
@@ -403,11 +425,15 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let vault_key = [1u8; 32];
         let manager = ChunkSyncManager::new(storage, vault_key);
-        
+
         let test_data = b"Metadata test data";
         let chunk_id = manager.store_chunk(test_data).await.unwrap();
-        
-        let metadata = manager.get_chunk_metadata(&chunk_id).await.unwrap().unwrap();
+
+        let metadata = manager
+            .get_chunk_metadata(&chunk_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(metadata.chunk_id, chunk_id);
         assert_eq!(metadata.size, test_data.len() as u64);
         assert!(metadata.is_available);

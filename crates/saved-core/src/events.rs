@@ -213,14 +213,14 @@ impl Op {
         // Decrypt the operation
         let event_key = derive_event_key(vault_key, &header.op_id)?;
         let ciphertext = envelope.ciphertext.clone();
-        
+
         // Extract nonce from header
         if header.nonce.len() != 24 {
             return Err(Error::Crypto("Invalid nonce length in header".to_string()));
         }
         let mut nonce = [0u8; 24];
         nonce.copy_from_slice(&header.nonce);
-        
+
         let operation_bytes = decrypt(&event_key, &nonce, &ciphertext)?;
 
         let operation: Operation =
@@ -428,7 +428,6 @@ mod tests {
         assert!(log.get_heads().contains(&hash));
     }
 }
-
 
 /// Extract timestamp from header
 fn extract_timestamp_from_header(header: &OpHeader) -> Result<chrono::DateTime<chrono::Utc>> {

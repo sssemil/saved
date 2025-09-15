@@ -1,12 +1,14 @@
 //! Message management commands
 
+use crate::utils::formatting::{format_file_size, format_message_id, format_short_message_id};
+use crate::utils::validation::{
+    validate_attachment, validate_message_content, validate_message_id,
+};
 use anyhow::Result;
 use colored::*;
 use comfy_table::{Cell, Table};
 use saved_core::{create_or_open_account, Config, MessageId};
 use std::path::PathBuf;
-use crate::utils::formatting::{format_message_id, format_short_message_id, format_file_size};
-use crate::utils::validation::{validate_message_content, validate_message_id, validate_attachment};
 
 /// Create a new message
 pub async fn create_command(
@@ -22,7 +24,11 @@ pub async fn create_command(
             println!("Attachments:");
             for attachment in &attachments {
                 if let Ok(metadata) = std::fs::metadata(attachment) {
-                    println!("  • {} ({})", attachment.display(), format_file_size(metadata.len()));
+                    println!(
+                        "  • {} ({})",
+                        attachment.display(),
+                        format_file_size(metadata.len())
+                    );
                 } else {
                     println!("  • {} (size unknown)", attachment.display());
                 }
@@ -32,7 +38,7 @@ pub async fn create_command(
 
     // Validate message content
     validate_message_content(content)?;
-    
+
     // Validate attachments
     for attachment in &attachments {
         validate_attachment(attachment)?;
@@ -99,7 +105,9 @@ pub async fn list_command(
     let account = create_or_open_account(config).await?;
 
     // Get messages from the account
-    let messages = account.list_messages().await
+    let messages = account
+        .list_messages()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list messages: {}", e))?;
 
     if messages.is_empty() {
@@ -128,7 +136,7 @@ pub async fn list_command(
             } else {
                 message.content.clone()
             };
-            
+
             let status = if message.is_purged {
                 "Purged".red()
             } else if message.is_deleted {
@@ -136,7 +144,7 @@ pub async fn list_command(
             } else {
                 "Active".green()
             };
-            
+
             table.add_row(vec![
                 Cell::new(format_short_message_id(&message.id.0)),
                 Cell::new(content_preview),
@@ -272,18 +280,32 @@ pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: boo
     let account = create_or_open_account(config).await?;
 
     // Get all messages and find the one with matching ID
-    let messages = account.list_messages().await
+    let messages = account
+        .list_messages()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to list messages: {}", e))?;
 
-    let message = messages.iter().find(|m| m.id == msg_id)
+    let message = messages
+        .iter()
+        .find(|m| m.id == msg_id)
         .ok_or_else(|| anyhow::anyhow!("Message with ID {} not found", message_id))?;
 
     // Display message details
     println!("{}", "Message Details:".bright_blue().bold());
-    println!("Message ID: {}", format_short_message_id(&message.id.0).bright_blue());
+    println!(
+        "Message ID: {}",
+        format_short_message_id(&message.id.0).bright_blue()
+    );
     println!("Content: {}", message.content);
-    println!("Created: {}", message.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string().bright_blue());
-    
+    println!(
+        "Created: {}",
+        message
+            .created_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string()
+            .bright_blue()
+    );
+
     let status = if message.is_purged {
         "Purged".red()
     } else if message.is_deleted {
@@ -292,7 +314,7 @@ pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: boo
         "Active".green()
     };
     println!("Status: {}", status);
-    
+
     if verbose {
         println!("Content Length: {} characters", message.content.len());
         println!("Message ID (full): {}", format_message_id(&message.id.0));

@@ -5,7 +5,7 @@
 
 use crate::crypto::{blake3_hash, DeviceKey, VaultKey};
 use crate::error::Result;
-use crate::events::{EventLog, Op, OpHash, Operation, OpId};
+use crate::events::{EventLog, Op, OpHash, OpId, Operation};
 use crate::storage::{sqlite::ChunkId, Storage};
 use crate::types::MessageId;
 use std::path::PathBuf;
@@ -57,7 +57,7 @@ impl SyncManager {
             // Find operations that are not dependencies of other operations
             let mut heads = Vec::new();
             let mut all_ops: std::collections::HashSet<OpHash> = std::collections::HashSet::new();
-            
+
             // Collect all operation hashes
             for op_envelope in &operations {
                 if let Some(header) = &op_envelope.header {
@@ -67,7 +67,7 @@ impl SyncManager {
                     all_ops.insert(hash);
                 }
             }
-            
+
             // Find operations that are not dependencies of other operations
             for op_envelope in &operations {
                 if let Some(header) = &op_envelope.header {
@@ -85,7 +85,7 @@ impl SyncManager {
                     }
                 }
             }
-            
+
             heads
         } else {
             Vec::new()
@@ -93,7 +93,10 @@ impl SyncManager {
     }
 
     /// Apply operations received from peers
-    pub async fn apply_peer_operations(&mut self, operations: Vec<crate::protobuf::OpEnvelope>) -> Result<()> {
+    pub async fn apply_peer_operations(
+        &mut self,
+        operations: Vec<crate::protobuf::OpEnvelope>,
+    ) -> Result<()> {
         for op_envelope in operations {
             // Check if we already have this operation
             if let Some(header) = &op_envelope.header {
@@ -101,30 +104,30 @@ impl SyncManager {
                 // if self.storage.has_operation(&header.hash).await? {
                 //     continue;
                 // }
-                
+
                 // TODO: Validate the operation signature
                 // if let Err(e) = op_envelope.verify_signature() {
                 //     println!("Invalid operation signature: {}", e);
                 //     continue;
                 // }
-                
+
                 // TODO: Decrypt and verify the operation
                 // if let Ok(op) = op_envelope.decrypt_and_verify(&self.vault_key) {
                 //     // Add to event log
                 //     self.event_log.add_operation(op.clone());
-                //     
+                //
                 //     // Store the encrypted operation
                 //     self.storage.store_encrypted_operation(&op_envelope).await?;
-                //     
+                //
                 //     println!("Applied operation from peer: {:?}", header.hash);
                 // } else {
                 //     println!("Failed to decrypt operation from peer");
                 // }
-                
+
                 println!("Received operation from peer: {:?}", header.op_id);
             }
         }
-        
+
         Ok(())
     }
 
@@ -152,17 +155,23 @@ impl SyncManager {
         for attachment_path in attachments {
             let file_data = tokio::fs::read(&attachment_path).await?;
             let file_hash = blake3_hash(&file_data);
-            
+
             let chunk_cids = self.process_attachment(&attachment_path).await?;
             attachment_cids.extend(&chunk_cids);
-            
+
             // Detect MIME type
             let mime_type = self.detect_mime_type(&attachment_path, &file_data);
-            
+
             // Store attachment metadata
-            let filename = attachment_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let filename = attachment_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
             let size = file_data.len() as u64;
-            let _ = self.storage.store_attachment(&msg_id, filename, size, &file_hash, mime_type, &chunk_cids).await;
+            let _ = self
+                .storage
+                .store_attachment(&msg_id, filename, size, &file_hash, mime_type, &chunk_cids)
+                .await;
         }
 
         // Create operation
@@ -218,25 +227,31 @@ impl SyncManager {
     /// Process an attachment file with deduplication
     async fn process_attachment(&mut self, path: &PathBuf) -> Result<Vec<ChunkId>> {
         let file_data = tokio::fs::read(path).await?;
-        
+
         // Compute file hash for deduplication
         let file_hash = blake3_hash(&file_data);
-        
+
         // Check if file already exists (deduplication)
-        let existing_attachments = self.storage.get_attachments_by_file_hash(&file_hash).await?;
+        let existing_attachments = self
+            .storage
+            .get_attachments_by_file_hash(&file_hash)
+            .await?;
         if !existing_attachments.is_empty() {
             // File already exists, get its chunks
             let existing_attachment = &existing_attachments[0];
-            let existing_chunks = self.storage.get_attachment_chunks(existing_attachment.id).await?;
-            
+            let existing_chunks = self
+                .storage
+                .get_attachment_chunks(existing_attachment.id)
+                .await?;
+
             // Increment reference counts for existing chunks
             for chunk_id in &existing_chunks {
                 self.storage.store_chunk(chunk_id, &[]).await?; // This increments ref count
             }
-            
+
             return Ok(existing_chunks);
         }
-        
+
         // New file, process normally
         let mut chunk_cids = Vec::new();
         const CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -260,7 +275,9 @@ impl SyncManager {
                 let mut chunk_with_nonce = Vec::new();
                 chunk_with_nonce.extend_from_slice(&nonce);
                 chunk_with_nonce.extend_from_slice(&encrypted_chunk);
-                self.storage.store_chunk(&chunk_id, &chunk_with_nonce).await?;
+                self.storage
+                    .store_chunk(&chunk_id, &chunk_with_nonce)
+                    .await?;
             } else {
                 // Chunk exists, just increment reference count
                 self.storage.store_chunk(&chunk_id, &[]).await?;
@@ -329,9 +346,11 @@ impl SyncManager {
         // Encrypt the operation for secure storage
         let vault_key = self.get_vault_key().await?;
         let encrypted_envelope = op.encrypt(&vault_key, &self.device_key)?;
-        
+
         // Store encrypted operation in database
-        self.storage.store_encrypted_operation(&encrypted_envelope).await?;
+        self.storage
+            .store_encrypted_operation(&encrypted_envelope)
+            .await?;
 
         // Also create and store Message objects for testing
         match operation {
@@ -445,7 +464,7 @@ impl SyncManager {
     /// Apply an operation from another device with CRDT conflict resolution
     pub async fn apply_operation(&mut self, op: Op) -> Result<()> {
         let op_hash = op.hash();
-        
+
         // Check if we already have this operation
         if self.event_log.get_operation(&op_hash).is_some() {
             return Ok(()); // Already applied
@@ -471,16 +490,17 @@ impl SyncManager {
         // Check that all parent operations exist
         for parent_hash in &op.parents {
             if self.event_log.get_operation(parent_hash).is_none() {
-                return Err(crate::error::Error::Sync(
-                    format!("Missing parent operation: {}", hex::encode(parent_hash))
-                ));
+                return Err(crate::error::Error::Sync(format!(
+                    "Missing parent operation: {}",
+                    hex::encode(parent_hash)
+                )));
             }
         }
 
         // Check lamport timestamp is reasonable
         if op.lamport > self.event_log.current_lamport() + 1000 {
             return Err(crate::error::Error::Sync(
-                "Lamport timestamp too far in future".to_string()
+                "Lamport timestamp too far in future".to_string(),
             ));
         }
 
@@ -499,19 +519,21 @@ impl SyncManager {
 
         // Get all operations for this message
         let message_ops = self.get_operations_for_message(msg_id);
-        
+
         // Apply CRDT conflict resolution
         let resolved_state = self.crdt_resolve_message_conflicts(&message_ops)?;
-        
+
         // Update the materialized view
-        self.update_message_materialized_view(msg_id, &resolved_state).await?;
+        self.update_message_materialized_view(msg_id, &resolved_state)
+            .await?;
 
         Ok(())
     }
 
     /// Get all operations for a specific message from the event log
     fn get_operations_for_message(&self, msg_id: [u8; 32]) -> Vec<Op> {
-        self.event_log.get_all_operations()
+        self.event_log
+            .get_all_operations()
             .into_iter()
             .filter(|op| {
                 matches!(
@@ -536,7 +558,8 @@ impl SyncManager {
         // Sort operations by lamport timestamp, then by device ID for deterministic ordering
         let mut sorted_ops = operations.to_vec();
         sorted_ops.sort_by(|a, b| {
-            a.lamport.cmp(&b.lamport)
+            a.lamport
+                .cmp(&b.lamport)
                 .then_with(|| a.id.device_pubkey.cmp(&b.id.device_pubkey))
         });
 
@@ -547,7 +570,9 @@ impl SyncManager {
 
         for op in sorted_ops {
             match &op.operation {
-                Operation::CreateMessage { body, created_at, .. } => {
+                Operation::CreateMessage {
+                    body, created_at, ..
+                } => {
                     if state == ResolvedMessageState::None {
                         state = ResolvedMessageState::Created {
                             body: body.clone(),
@@ -556,14 +581,18 @@ impl SyncManager {
                         last_edit = Some(op.clone());
                     }
                 }
-                Operation::EditMessage { body, edited_at, .. } => {
+                Operation::EditMessage {
+                    body, edited_at, ..
+                } => {
                     if !is_deleted && !is_purged {
                         // Only apply edits if message isn't deleted/purged
                         // Use last-write-wins with lamport timestamp tiebreaker
-                        if last_edit.is_none() || 
-                           op.lamport > last_edit.as_ref().unwrap().lamport ||
-                           (op.lamport == last_edit.as_ref().unwrap().lamport && 
-                            op.id.device_pubkey > last_edit.as_ref().unwrap().id.device_pubkey) {
+                        if last_edit.is_none()
+                            || op.lamport > last_edit.as_ref().unwrap().lamport
+                            || (op.lamport == last_edit.as_ref().unwrap().lamport
+                                && op.id.device_pubkey
+                                    > last_edit.as_ref().unwrap().id.device_pubkey)
+                        {
                             state = ResolvedMessageState::Edited {
                                 body: body.clone(),
                                 last_edited_at: *edited_at,
@@ -616,7 +645,10 @@ impl SyncManager {
                 };
                 self.storage.store_message(&message).await?;
             }
-            ResolvedMessageState::Edited { body, last_edited_at } => {
+            ResolvedMessageState::Edited {
+                body,
+                last_edited_at,
+            } => {
                 let message = crate::types::Message {
                     id: message_id,
                     content: body.clone(),
@@ -669,7 +701,11 @@ impl SyncManager {
     }
 
     /// Download missing chunks for an attachment on-demand
-    pub async fn download_attachment_chunks(&mut self, attachment_id: i64, network_manager: Option<&mut crate::networking::NetworkManager>) -> Result<()> {
+    pub async fn download_attachment_chunks(
+        &mut self,
+        attachment_id: i64,
+        network_manager: Option<&mut crate::networking::NetworkManager>,
+    ) -> Result<()> {
         // Get attachment metadata
         let attachment = match self.storage.get_attachment_by_id(attachment_id).await? {
             Some(att) => att,
@@ -678,7 +714,7 @@ impl SyncManager {
 
         // Get chunk IDs for this attachment
         let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
-        
+
         // Check which chunks we're missing
         let mut missing_chunks = Vec::new();
         for chunk_id in &chunk_ids {
@@ -691,13 +727,19 @@ impl SyncManager {
             return Ok(()); // All chunks are already available
         }
 
-        println!("Missing {} chunks for attachment '{}', requesting from peers...", 
-                missing_chunks.len(), attachment.filename);
+        println!(
+            "Missing {} chunks for attachment '{}', requesting from peers...",
+            missing_chunks.len(),
+            attachment.filename
+        );
 
         // If we have a network manager, try to download missing chunks
         if let Some(network_manager) = network_manager {
             // Request chunk availability from peers
-            if let Err(e) = network_manager.request_chunk_availability(missing_chunks.clone()).await {
+            if let Err(e) = network_manager
+                .request_chunk_availability(missing_chunks.clone())
+                .await
+            {
                 println!("Failed to request chunk availability: {}", e);
                 return Err(e);
             }
@@ -708,7 +750,9 @@ impl SyncManager {
                 return Err(e);
             }
         } else {
-            return Err(crate::error::Error::Network("No network manager available for chunk download".to_string()));
+            return Err(crate::error::Error::Network(
+                "No network manager available for chunk download".to_string(),
+            ));
         }
 
         Ok(())
@@ -724,19 +768,27 @@ impl SyncManager {
 
         // Get chunk IDs for this attachment
         let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
-        
+
         // Reconstruct file from chunks
         let mut file_data = Vec::new();
         for chunk_id in &chunk_ids {
             // Check if we have this chunk
             if !self.storage.has_chunk(chunk_id).await? {
-                return Err(crate::error::Error::Storage(format!("Chunk {} not found", hex::encode(chunk_id))));
+                return Err(crate::error::Error::Storage(format!(
+                    "Chunk {} not found",
+                    hex::encode(chunk_id)
+                )));
             }
 
             // Get the encrypted chunk data
             let encrypted_chunk = match self.storage.get_chunk(chunk_id).await? {
                 Some(data) => data,
-                None => return Err(crate::error::Error::Storage(format!("Chunk {} data not found", hex::encode(chunk_id)))),
+                None => {
+                    return Err(crate::error::Error::Storage(format!(
+                        "Chunk {} data not found",
+                        hex::encode(chunk_id)
+                    )))
+                }
             };
 
             // Decrypt the chunk
@@ -754,11 +806,15 @@ impl SyncManager {
         // Verify file hash matches
         let computed_hash = blake3_hash(&file_data);
         if computed_hash != attachment.file_hash {
-            return Err(crate::error::Error::Crypto("File hash verification failed".to_string()));
+            return Err(crate::error::Error::Crypto(
+                "File hash verification failed".to_string(),
+            ));
         }
 
         // Update access time
-        self.storage.update_attachment_access_time(attachment_id).await?;
+        self.storage
+            .update_attachment_access_time(attachment_id)
+            .await?;
 
         Ok(file_data)
     }
@@ -766,18 +822,21 @@ impl SyncManager {
     /// Check if an attachment is fully available (all chunks present)
     pub async fn is_attachment_available(&self, attachment_id: i64) -> Result<bool> {
         let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
-        
+
         for chunk_id in &chunk_ids {
             if !self.storage.has_chunk(chunk_id).await? {
                 return Ok(false);
             }
         }
-        
+
         Ok(true)
     }
 
     /// Get attachment availability status
-    pub async fn get_attachment_availability(&self, attachment_id: i64) -> Result<AttachmentAvailability> {
+    pub async fn get_attachment_availability(
+        &self,
+        attachment_id: i64,
+    ) -> Result<AttachmentAvailability> {
         let attachment = match self.storage.get_attachment_by_id(attachment_id).await? {
             Some(att) => att,
             None => return Err(crate::error::Error::MessageNotFound),
@@ -806,10 +865,13 @@ impl SyncManager {
             available_chunks,
             missing_chunks,
             is_fully_available,
-            progress_percentage: if total_chunks > 0 { (available_chunks as f64 / total_chunks as f64) * 100.0 } else { 0.0 },
+            progress_percentage: if total_chunks > 0 {
+                (available_chunks as f64 / total_chunks as f64) * 100.0
+            } else {
+                0.0
+            },
         })
     }
-
 }
 
 /// Attachment availability information
@@ -867,7 +929,7 @@ mod tests {
         let device_key = DeviceKey::generate();
         let storage = Box::new(MemoryStorage::new());
         let temp_dir = TempDir::new().unwrap();
-        
+
         let mut sync_manager = SyncManager::new(
             storage,
             temp_dir.path().to_path_buf(),
@@ -893,7 +955,7 @@ mod tests {
     async fn test_crdt_create_message() {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
-        
+
         // Create a message
         let msg_id = [1u8; 32];
         let operation = Operation::CreateMessage {
@@ -903,10 +965,10 @@ mod tests {
             attachments: Vec::new(),
             created_at: Utc::now(),
         };
-        
+
         let op = create_test_operation(&device_key, 1, Vec::new(), operation);
         sync_manager.apply_operation(op).await.unwrap();
-        
+
         // Check that message was created
         let messages = sync_manager.get_all_messages().await.unwrap();
         assert_eq!(messages.len(), 1);
@@ -919,7 +981,7 @@ mod tests {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Create a message
         let create_op = create_test_operation(
             &device_key,
@@ -935,7 +997,7 @@ mod tests {
         );
         let create_op_hash = create_op.hash();
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Edit the message
         let edit_op = create_test_operation(
             &device_key,
@@ -948,7 +1010,7 @@ mod tests {
             },
         );
         sync_manager.apply_operation(edit_op).await.unwrap();
-        
+
         // Check that message was edited
         let messages = sync_manager.get_all_messages().await.unwrap();
         assert_eq!(messages.len(), 1);
@@ -960,7 +1022,7 @@ mod tests {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Create a message
         let create_op = create_test_operation(
             &device_key,
@@ -976,10 +1038,10 @@ mod tests {
         );
         let create_op_hash = create_op.hash();
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Check that message was created
         let messages_after_create = sync_manager.get_all_messages().await.unwrap();
-        
+
         // Delete the message
         let delete_op = create_test_operation(
             &device_key,
@@ -992,9 +1054,13 @@ mod tests {
             },
         );
         sync_manager.apply_operation(delete_op).await.unwrap();
-        
+
         // Check that message is marked as deleted
-        let messages = sync_manager.storage.get_all_messages_including_deleted().await.unwrap();
+        let messages = sync_manager
+            .storage
+            .get_all_messages_including_deleted()
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 1);
         assert!(messages[0].is_deleted);
     }
@@ -1005,7 +1071,7 @@ mod tests {
         let device_key1 = DeviceKey::generate();
         let device_key2 = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Create a message
         let create_op = create_test_operation(
             &device_key1,
@@ -1021,7 +1087,7 @@ mod tests {
         );
         let create_op_hash = create_op.hash();
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Two concurrent edits with same lamport timestamp
         let edit1_op = create_test_operation(
             &device_key1,
@@ -1033,7 +1099,7 @@ mod tests {
                 edited_at: Utc::now(),
             },
         );
-        
+
         let edit2_op = create_test_operation(
             &device_key2,
             2, // Same lamport timestamp
@@ -1044,15 +1110,15 @@ mod tests {
                 edited_at: Utc::now(),
             },
         );
-        
+
         // Apply both edits
         sync_manager.apply_operation(edit1_op).await.unwrap();
         sync_manager.apply_operation(edit2_op).await.unwrap();
-        
+
         // Check that the edit with higher device ID wins (deterministic tiebreaker)
         let messages = sync_manager.get_all_messages().await.unwrap();
         assert_eq!(messages.len(), 1);
-        
+
         // The winner should be the one with higher device_pubkey
         if device_key2.public_key_bytes() > device_key1.public_key_bytes() {
             assert_eq!(messages[0].content, "Edit from device 2");
@@ -1066,7 +1132,7 @@ mod tests {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Create a message
         let create_op = create_test_operation(
             &device_key,
@@ -1082,7 +1148,7 @@ mod tests {
         );
         let create_op_hash = create_op.hash();
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Edit the message
         let edit_op = create_test_operation(
             &device_key,
@@ -1095,7 +1161,7 @@ mod tests {
             },
         );
         sync_manager.apply_operation(edit_op.clone()).await.unwrap();
-        
+
         // Delete the message (should override the edit)
         let edit_op_hash = edit_op.hash();
         let delete_op = create_test_operation(
@@ -1109,9 +1175,13 @@ mod tests {
             },
         );
         sync_manager.apply_operation(delete_op).await.unwrap();
-        
+
         // Check that message is deleted (not edited)
-        let messages = sync_manager.storage.get_all_messages_including_deleted().await.unwrap();
+        let messages = sync_manager
+            .storage
+            .get_all_messages_including_deleted()
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 1);
         assert!(messages[0].is_deleted);
     }
@@ -1121,7 +1191,7 @@ mod tests {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Create a message
         let create_op = create_test_operation(
             &device_key,
@@ -1137,7 +1207,7 @@ mod tests {
         );
         let create_op_hash = create_op.hash();
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Edit the message
         let edit_op = create_test_operation(
             &device_key,
@@ -1150,7 +1220,7 @@ mod tests {
             },
         );
         sync_manager.apply_operation(edit_op.clone()).await.unwrap();
-        
+
         // Delete the message
         let edit_op_hash = edit_op.hash();
         let delete_op = create_test_operation(
@@ -1163,8 +1233,11 @@ mod tests {
                 deleted_at: Utc::now(),
             },
         );
-        sync_manager.apply_operation(delete_op.clone()).await.unwrap();
-        
+        sync_manager
+            .apply_operation(delete_op.clone())
+            .await
+            .unwrap();
+
         // Purge the message (should remove it completely)
         let delete_op_hash = delete_op.hash();
         let purge_op = create_test_operation(
@@ -1177,9 +1250,13 @@ mod tests {
             },
         );
         sync_manager.apply_operation(purge_op).await.unwrap();
-        
+
         // Check that message is completely removed
-        let messages = sync_manager.storage.get_all_messages_including_deleted().await.unwrap();
+        let messages = sync_manager
+            .storage
+            .get_all_messages_including_deleted()
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 0);
     }
 
@@ -1187,11 +1264,11 @@ mod tests {
     async fn test_sync_heads_and_operations() {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
-        
+
         // Initially no heads
         let heads = sync_manager.get_sync_heads();
         assert_eq!(heads.len(), 0);
-        
+
         // Create a message
         let msg_id = [1u8; 32];
         let create_op = create_test_operation(
@@ -1207,11 +1284,11 @@ mod tests {
             },
         );
         sync_manager.apply_operation(create_op).await.unwrap();
-        
+
         // Should have one head now
         let heads = sync_manager.get_sync_heads();
         assert_eq!(heads.len(), 1);
-        
+
         // Get operations since empty heads (should return all operations)
         let ops = sync_manager.get_operations_for_sync(&[]).await.unwrap();
         assert_eq!(ops.len(), 1);
@@ -1222,7 +1299,7 @@ mod tests {
         let mut sync_manager = create_test_sync_manager().await;
         let device_key = DeviceKey::generate();
         let msg_id = [1u8; 32];
-        
+
         // Try to apply an operation with a non-existent parent
         let fake_parent = [0u8; 32];
         let invalid_op = create_test_operation(
@@ -1237,11 +1314,14 @@ mod tests {
                 created_at: Utc::now(),
             },
         );
-        
+
         // Should fail verification
         let result = sync_manager.apply_operation(invalid_op).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing parent operation"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Missing parent operation"));
     }
 
     #[tokio::test]
@@ -1249,7 +1329,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create a test file
@@ -1276,7 +1357,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create a test file
@@ -1285,16 +1367,26 @@ mod tests {
         std::fs::write(&file_path, "Hello, World!").unwrap();
 
         // Create message with attachment
-        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+        let msg_id = sync_manager
+            .create_message("Test message".to_string(), vec![file_path])
+            .await
+            .unwrap();
 
         // Get attachments for the message
-        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachments = sync_manager
+            .storage
+            .get_attachments_for_message(&msg_id)
+            .await
+            .unwrap();
         assert_eq!(attachments.len(), 1);
 
         let attachment = &attachments[0];
         assert_eq!(attachment.filename, "test.txt");
         assert_eq!(attachment.size, 13); // "Hello, World!" length
-        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Active);
+        assert_eq!(
+            attachment.status,
+            crate::storage::trait_impl::AttachmentStatus::Active
+        );
         assert!(attachment.mime_type.is_some());
         assert_eq!(attachment.mime_type.as_ref().unwrap(), "text/plain");
 
@@ -1311,7 +1403,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create a test file
@@ -1320,24 +1413,59 @@ mod tests {
         std::fs::write(&file_path, "Hello, World!").unwrap();
 
         // Create message with attachment
-        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+        let msg_id = sync_manager
+            .create_message("Test message".to_string(), vec![file_path])
+            .await
+            .unwrap();
 
         // Get attachment ID
-        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachments = sync_manager
+            .storage
+            .get_attachments_for_message(&msg_id)
+            .await
+            .unwrap();
         let attachment_id = attachments[0].id;
 
         // Test soft delete
-        sync_manager.storage.delete_attachment(attachment_id).await.unwrap();
-        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
-        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Deleted);
+        sync_manager
+            .storage
+            .delete_attachment(attachment_id)
+            .await
+            .unwrap();
+        let attachment = sync_manager
+            .storage
+            .get_attachment_by_id(attachment_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            attachment.status,
+            crate::storage::trait_impl::AttachmentStatus::Deleted
+        );
 
         // Test purge
-        sync_manager.storage.purge_attachment(attachment_id).await.unwrap();
-        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
-        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Purged);
+        sync_manager
+            .storage
+            .purge_attachment(attachment_id)
+            .await
+            .unwrap();
+        let attachment = sync_manager
+            .storage
+            .get_attachment_by_id(attachment_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            attachment.status,
+            crate::storage::trait_impl::AttachmentStatus::Purged
+        );
 
         // Test garbage collection
-        let gc_stats = sync_manager.storage.garbage_collect_attachments().await.unwrap();
+        let gc_stats = sync_manager
+            .storage
+            .garbage_collect_attachments()
+            .await
+            .unwrap();
         assert_eq!(gc_stats.attachments_removed, 1);
         assert!(gc_stats.space_freed > 0);
     }
@@ -1347,7 +1475,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create a test file
@@ -1356,21 +1485,42 @@ mod tests {
         std::fs::write(&file_path, "Hello, World!").unwrap();
 
         // Create message with attachment
-        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+        let msg_id = sync_manager
+            .create_message("Test message".to_string(), vec![file_path])
+            .await
+            .unwrap();
 
         // Get attachment ID
-        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachments = sync_manager
+            .storage
+            .get_attachments_for_message(&msg_id)
+            .await
+            .unwrap();
         let attachment_id = attachments[0].id;
 
         // Initially no access time
-        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        let attachment = sync_manager
+            .storage
+            .get_attachment_by_id(attachment_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(attachment.last_accessed.is_none());
 
         // Update access time
-        sync_manager.storage.update_attachment_access_time(attachment_id).await.unwrap();
+        sync_manager
+            .storage
+            .update_attachment_access_time(attachment_id)
+            .await
+            .unwrap();
 
         // Check access time was updated
-        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        let attachment = sync_manager
+            .storage
+            .get_attachment_by_id(attachment_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(attachment.last_accessed.is_some());
     }
 
@@ -1379,7 +1529,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create two files with identical content
@@ -1390,18 +1541,36 @@ mod tests {
         std::fs::write(&file2_path, "Identical content").unwrap();
 
         // Create two messages with identical files
-        let msg1_id = sync_manager.create_message("Message 1".to_string(), vec![file1_path]).await.unwrap();
-        let msg2_id = sync_manager.create_message("Message 2".to_string(), vec![file2_path]).await.unwrap();
+        let msg1_id = sync_manager
+            .create_message("Message 1".to_string(), vec![file1_path])
+            .await
+            .unwrap();
+        let msg2_id = sync_manager
+            .create_message("Message 2".to_string(), vec![file2_path])
+            .await
+            .unwrap();
 
         // Get attachments
-        let attachments1 = sync_manager.storage.get_attachments_for_message(&msg1_id).await.unwrap();
-        let attachments2 = sync_manager.storage.get_attachments_for_message(&msg2_id).await.unwrap();
+        let attachments1 = sync_manager
+            .storage
+            .get_attachments_for_message(&msg1_id)
+            .await
+            .unwrap();
+        let attachments2 = sync_manager
+            .storage
+            .get_attachments_for_message(&msg2_id)
+            .await
+            .unwrap();
 
         // Both should have the same file hash
         assert_eq!(attachments1[0].file_hash, attachments2[0].file_hash);
 
         // Test finding attachments by file hash
-        let same_hash_attachments = sync_manager.storage.get_attachments_by_file_hash(&attachments1[0].file_hash).await.unwrap();
+        let same_hash_attachments = sync_manager
+            .storage
+            .get_attachments_by_file_hash(&attachments1[0].file_hash)
+            .await
+            .unwrap();
         assert_eq!(same_hash_attachments.len(), 2);
 
         // Test statistics show deduplication
@@ -1415,7 +1584,8 @@ mod tests {
         let storage = Box::new(crate::storage::MemoryStorage::new());
         let vault_key = crate::crypto::generate_vault_key();
         let device_key = crate::crypto::DeviceKey::generate();
-        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        let mut sync_manager =
+            SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
         sync_manager.initialize().await.unwrap();
 
         // Create a message with a file attachment
@@ -1424,22 +1594,35 @@ mod tests {
         let content = b"This is a test file for progressive download functionality. It should be chunked and then reconstructed.";
         tokio::fs::write(&file_path, content).await.unwrap();
 
-        let msg_id = sync_manager.create_message(
-            "Message with file for progressive download".to_string(),
-            vec![file_path.clone()],
-        ).await.unwrap();
+        let msg_id = sync_manager
+            .create_message(
+                "Message with file for progressive download".to_string(),
+                vec![file_path.clone()],
+            )
+            .await
+            .unwrap();
 
         // Get the attachment
-        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachments = sync_manager
+            .storage
+            .get_attachments_for_message(&msg_id)
+            .await
+            .unwrap();
         assert_eq!(attachments.len(), 1);
         let attachment = &attachments[0];
 
         // Check if attachment is available (should be since we just created it)
-        let is_available = sync_manager.is_attachment_available(attachment.id).await.unwrap();
+        let is_available = sync_manager
+            .is_attachment_available(attachment.id)
+            .await
+            .unwrap();
         assert!(is_available);
 
         // Get attachment availability status
-        let availability = sync_manager.get_attachment_availability(attachment.id).await.unwrap();
+        let availability = sync_manager
+            .get_attachment_availability(attachment.id)
+            .await
+            .unwrap();
         assert_eq!(availability.attachment_id, attachment.id);
         assert_eq!(availability.filename, "test_progressive.txt");
         assert_eq!(availability.total_size, content.len() as u64);
@@ -1448,7 +1631,10 @@ mod tests {
         assert_eq!(availability.missing_chunks.len(), 0);
 
         // Reconstruct the file
-        let reconstructed_data = sync_manager.reconstruct_attachment_file(attachment.id).await.unwrap();
+        let reconstructed_data = sync_manager
+            .reconstruct_attachment_file(attachment.id)
+            .await
+            .unwrap();
         assert_eq!(reconstructed_data, content);
 
         // Verify file hash matches

@@ -39,7 +39,9 @@
 //! }
 //! ```
 
+pub mod chunk_sync;
 pub mod crypto;
+pub mod device_linking;
 pub mod error;
 pub mod error_recovery;
 pub mod events;
@@ -48,8 +50,6 @@ pub mod protobuf;
 pub mod storage;
 pub mod sync;
 pub mod types;
-pub mod device_linking;
-pub mod chunk_sync;
 
 // Re-export main types and functions
 pub use error::{Error, Result};
@@ -147,40 +147,73 @@ mod tests {
         let device_a_messages = device_a.list_messages().await?;
         let device_b_messages = device_b.list_messages().await?;
         let device_c_messages = device_c.list_messages().await?;
-        
+
         // Verify each device has the expected number of messages
-        assert_eq!(device_a_messages.len(), 2, "Device A should have 2 messages");
-        assert_eq!(device_b_messages.len(), 2, "Device B should have 2 messages");
-        assert_eq!(device_c_messages.len(), 2, "Device C should have 2 messages");
-        
+        assert_eq!(
+            device_a_messages.len(),
+            2,
+            "Device A should have 2 messages"
+        );
+        assert_eq!(
+            device_b_messages.len(),
+            2,
+            "Device B should have 2 messages"
+        );
+        assert_eq!(
+            device_c_messages.len(),
+            2,
+            "Device C should have 2 messages"
+        );
+
         // Verify message content integrity
         for device_messages in [&device_a_messages, &device_b_messages, &device_c_messages] {
             for message in device_messages {
-                assert!(!message.content.is_empty(), "Message content should not be empty");
+                assert!(
+                    !message.content.is_empty(),
+                    "Message content should not be empty"
+                );
                 assert!(!message.is_deleted, "Messages should not be deleted");
                 assert!(!message.is_purged, "Messages should not be purged");
-                assert!(message.created_at <= chrono::Utc::now(), "Message timestamp should be valid");
+                assert!(
+                    message.created_at <= chrono::Utc::now(),
+                    "Message timestamp should be valid"
+                );
             }
         }
-        
+
         // Test message editing functionality
         let first_message = &device_a_messages[0];
-        let edit_result = device_a.edit_message(first_message.id, "Edited content".to_string()).await;
+        let edit_result = device_a
+            .edit_message(first_message.id, "Edited content".to_string())
+            .await;
         assert!(edit_result.is_ok(), "Message editing should succeed");
-        
+
         // Verify the edit was applied
         let updated_messages = device_a.list_messages().await?;
-        let edited_message = updated_messages.iter().find(|m| m.id == first_message.id).unwrap();
-        assert_eq!(edited_message.content, "Edited content", "Message content should be updated");
-        
+        let edited_message = updated_messages
+            .iter()
+            .find(|m| m.id == first_message.id)
+            .unwrap();
+        assert_eq!(
+            edited_message.content, "Edited content",
+            "Message content should be updated"
+        );
+
         // Test message deletion
         let delete_result = device_a.delete_message(first_message.id).await;
         assert!(delete_result.is_ok(), "Message deletion should succeed");
-        
+
         // Verify the message is no longer in the list (deleted messages are filtered out)
         let final_messages = device_a.list_messages().await?;
-        assert_eq!(final_messages.len(), 1, "Should have one message after deleting the other");
-        assert!(!final_messages.iter().any(|m| m.id == first_message.id), "Deleted message should not be in the list");
+        assert_eq!(
+            final_messages.len(),
+            1,
+            "Should have one message after deleting the other"
+        );
+        assert!(
+            !final_messages.iter().any(|m| m.id == first_message.id),
+            "Deleted message should not be in the list"
+        );
 
         println!("📋 Device A has {} messages", device_a_messages.len());
         println!("📋 Device B has {} messages", device_b_messages.len());
@@ -218,7 +251,9 @@ mod tests {
 
         // First open: create a message
         let mut handle = AccountHandle::create_or_open(config.clone()).await?;
-        let msg_id = handle.create_message("persist me".to_string(), Vec::new()).await?;
+        let msg_id = handle
+            .create_message("persist me".to_string(), Vec::new())
+            .await?;
 
         // Ensure it's there
         let messages = handle.list_messages().await?;
@@ -331,40 +366,62 @@ mod tests {
         let messages = device_a.list_messages().await?;
         assert_eq!(messages.len(), 1, "Should have exactly one message");
         assert_eq!(messages[0].id, msg_id, "Message ID should match");
-        
+
         // Verify message content
-        assert_eq!(messages[0].content, "Message with attachments", "Message content should match");
+        assert_eq!(
+            messages[0].content, "Message with attachments",
+            "Message content should match"
+        );
         assert!(!messages[0].is_deleted, "Message should not be deleted");
         assert!(!messages[0].is_purged, "Message should not be purged");
-        assert!(messages[0].created_at <= chrono::Utc::now(), "Message timestamp should be valid");
-        
+        assert!(
+            messages[0].created_at <= chrono::Utc::now(),
+            "Message timestamp should be valid"
+        );
+
         // Test attachment handling with actual files
         let temp_dir = tempfile::tempdir()?;
         let attachment1_path = temp_dir.path().join("test_attachment1.txt");
         let attachment2_path = temp_dir.path().join("test_attachment2.txt");
-        
+
         // Create test attachment files
         std::fs::write(&attachment1_path, "This is test attachment 1 content")?;
         std::fs::write(&attachment2_path, "This is test attachment 2 content")?;
-        
-        let attachment_test_result = device_a.create_message(
-            "Message with test attachments".to_string(), 
-            vec![attachment1_path, attachment2_path]
-        ).await;
-        assert!(attachment_test_result.is_ok(), "Message with attachments should be created");
-        
+
+        let attachment_test_result = device_a
+            .create_message(
+                "Message with test attachments".to_string(),
+                vec![attachment1_path, attachment2_path],
+            )
+            .await;
+        assert!(
+            attachment_test_result.is_ok(),
+            "Message with attachments should be created"
+        );
+
         // Verify the attachment message was created
         let attachment_messages = device_a.list_messages().await?;
-        assert_eq!(attachment_messages.len(), 2, "Should have two messages after attachment test");
-        
+        assert_eq!(
+            attachment_messages.len(),
+            2,
+            "Should have two messages after attachment test"
+        );
+
         // Test message purging
         let purge_result = device_a.purge_message(msg_id).await;
         assert!(purge_result.is_ok(), "Message purging should succeed");
-        
+
         // Verify the message is completely removed (purged messages are deleted from storage)
         let purged_messages = device_a.list_messages().await?;
-        assert_eq!(purged_messages.len(), 1, "Should have one message after purging the other");
-        assert!(!purged_messages.iter().any(|m| m.id == msg_id), "Purged message should not be in the list");
+        assert_eq!(
+            purged_messages.len(),
+            1,
+            "Should have one message after purging the other"
+        );
+        assert!(
+            !purged_messages.iter().any(|m| m.id == msg_id),
+            "Purged message should not be in the list"
+        );
 
         println!("✅ File attachment test completed");
 
@@ -466,37 +523,41 @@ mod tests {
         };
 
         // Create laptop as account key holder
-        let laptop = crate::types::AccountHandle::create_account_key_holder(config_laptop).await.unwrap();
-        
+        let laptop = crate::types::AccountHandle::create_account_key_holder(config_laptop)
+            .await
+            .unwrap();
+
         // Create new phone as regular device
-        let new_phone = crate::types::AccountHandle::create_or_open(config_phone).await.unwrap();
+        let new_phone = crate::types::AccountHandle::create_or_open(config_phone)
+            .await
+            .unwrap();
 
         // Verify laptop has account private key
         assert!(laptop.has_account_private_key().await.unwrap());
-        
+
         // Verify new phone doesn't have account private key initially
         assert!(!new_phone.has_account_private_key().await.unwrap());
-        
+
         // Test the distributed account key framework
         // In a real scenario, device authorization would happen through QR codes and certificates
         // For testing, we'll focus on the account key sharing functionality
-        
+
         // Test account key sharing capability (simplified for testing)
         // In a real scenario, the device would be authorized first
         // For testing, we'll just verify the framework is in place
-        
+
         // Test that laptop can get account key info
         let laptop_key_info = laptop.get_account_key_info().await.unwrap();
         assert!(laptop_key_info.is_some());
         assert!(laptop_key_info.unwrap().has_private_key);
-        
+
         // Test that new phone doesn't have account key info initially
         let phone_key_info = new_phone.get_account_key_info().await.unwrap();
         assert!(phone_key_info.is_none());
-        
+
         // Test that new phone doesn't have account private key initially
         assert!(!new_phone.has_account_private_key().await.unwrap());
-        
+
         println!("✅ Distributed account key scenario works end-to-end!");
     }
 }

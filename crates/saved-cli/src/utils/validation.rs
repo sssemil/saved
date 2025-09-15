@@ -3,19 +3,6 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
-/// Validate that a path exists and is a directory
-pub fn validate_directory_path(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Err(anyhow!("Path does not exist: {}", path.display()));
-    }
-
-    if !path.is_dir() {
-        return Err(anyhow!("Path is not a directory: {}", path.display()));
-    }
-
-    Ok(())
-}
-
 /// Validate that a path exists and is a file
 pub fn validate_file_path(path: &Path) -> Result<()> {
     if !path.exists() {
@@ -49,19 +36,6 @@ pub fn validate_hex_string(hex_str: &str, expected_length: usize) -> Result<()> 
 /// Validate a message ID format
 pub fn validate_message_id(message_id: &str) -> Result<()> {
     validate_hex_string(message_id, 32)
-}
-
-/// Validate a device ID format
-pub fn validate_device_id(device_id: &str) -> Result<()> {
-    if device_id.is_empty() {
-        return Err(anyhow!("Device ID cannot be empty"));
-    }
-
-    if device_id.len() > 64 {
-        return Err(anyhow!("Device ID too long (max 64 characters)"));
-    }
-
-    Ok(())
 }
 
 /// Validate message content

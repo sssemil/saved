@@ -218,11 +218,17 @@ pub struct ErrorRecoveryManager {
     retry_stats: RetryStats,
 }
 
+impl Default for ErrorRecoveryManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ErrorRecoveryManager {
     pub fn new() -> Self {
         let mut retry_configs = HashMap::new();
         let default_configs = RetryConfigs::default();
-        
+
         retry_configs.insert(OperationType::Network, default_configs.network);
         retry_configs.insert(OperationType::Storage, default_configs.storage);
         retry_configs.insert(OperationType::Sync, default_configs.sync);
@@ -243,9 +249,13 @@ impl ErrorRecoveryManager {
         operation: F,
     ) -> Result<T>
     where
-        F: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send>> + Send + Sync,
+        F: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send>>
+            + Send
+            + Sync,
     {
-        let config = self.retry_configs.get(&operation_type)
+        let config = self
+            .retry_configs
+            .get(&operation_type)
             .ok_or_else(|| Error::Network("Unknown operation type".to_string()))?
             .clone();
 
@@ -264,15 +274,15 @@ impl ErrorRecoveryManager {
             self.retry_stats.total_attempts += 1;
 
             let operation_result = operation().await;
-            
+
             match operation_result {
                 Ok(result) => {
                     self.record_operation_success(operation_name);
                     self.retry_stats.successful_attempts += 1;
-                    
+
                     let total_time = start_time.elapsed();
                     self.update_average_retry_time(total_time);
-                    
+
                     return Ok(result);
                 }
                 Err(e) => {
@@ -286,18 +296,18 @@ impl ErrorRecoveryManager {
                     // Calculate delay with jitter
                     let jitter = fastrand::f64() * config.jitter_factor * delay.as_secs_f64();
                     let actual_delay = delay + Duration::from_secs_f64(jitter);
-                    
+
                     sleep(actual_delay).await;
-                    
+
                     // Exponential backoff
                     delay = Duration::from_millis(
-                        (delay.as_millis() as f64 * config.backoff_multiplier) as u64
-                    ).min(config.max_delay);
+                        (delay.as_millis() as f64 * config.backoff_multiplier) as u64,
+                    )
+                    .min(config.max_delay);
                 }
             }
         }
     }
-
 
     /// Get retry statistics
     pub fn get_retry_stats(&self) -> &RetryStats {
@@ -316,11 +326,14 @@ impl ErrorRecoveryManager {
 
     /// Get circuit breaker status for an operation
     pub fn get_circuit_breaker_status(&self, operation_name: &str) -> Option<CircuitBreakerStatus> {
-        self.circuit_breakers.get(operation_name).map(|cb| cb.get_status())
+        self.circuit_breakers
+            .get(operation_name)
+            .map(|cb| cb.get_status())
     }
 
     fn can_execute_operation(&self, operation_name: &str) -> bool {
-        self.circuit_breakers.get(operation_name)
+        self.circuit_breakers
+            .get(operation_name)
             .map(|cb| cb.can_execute())
             .unwrap_or(true)
     }
@@ -337,14 +350,16 @@ impl ErrorRecoveryManager {
         } else {
             let mut circuit_breaker = CircuitBreaker::new(CircuitBreakerConfig::default());
             circuit_breaker.record_failure();
-            self.circuit_breakers.insert(operation_name.to_string(), circuit_breaker);
+            self.circuit_breakers
+                .insert(operation_name.to_string(), circuit_breaker);
         }
     }
 
     fn update_average_retry_time(&mut self, new_time: Duration) {
         let total_attempts = self.retry_stats.total_attempts as f64;
         let current_avg = self.retry_stats.average_retry_time.as_millis() as f64;
-        let new_avg = (current_avg * (total_attempts - 1.0) + new_time.as_millis() as f64) / total_attempts;
+        let new_avg =
+            (current_avg * (total_attempts - 1.0) + new_time.as_millis() as f64) / total_attempts;
         self.retry_stats.average_retry_time = Duration::from_millis(new_avg as u64);
     }
 }

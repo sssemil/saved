@@ -109,7 +109,8 @@ impl DeviceLinkingManager {
         self.validate_linking_request(&qr_data.request)?;
 
         // Encrypt the vault key with the requesting device's public key
-        let encrypted_vault_key = self.encrypt_vault_key(&qr_data.request.public_key, &vault_key)?;
+        let encrypted_vault_key =
+            self.encrypt_vault_key(&qr_data.request.public_key, &vault_key)?;
 
         // Generate authorization token
         let auth_token = self.generate_auth_token(&qr_data.request, &device_key)?;
@@ -137,7 +138,9 @@ impl DeviceLinkingManager {
         device_key: DeviceKey,
     ) -> Result<VaultKey> {
         // Find the pending request
-        let request = self.pending_requests.get(&device_id)
+        let request = self
+            .pending_requests
+            .get(&device_id)
             .ok_or_else(|| Error::DeviceLinking("No pending request found".to_string()))?;
 
         // Validate the response
@@ -190,14 +193,22 @@ impl DeviceLinkingManager {
     }
 
     /// Decrypt vault key with device's private key
-    fn decrypt_vault_key(&self, _encrypted_vault_key: &[u8], _device_key: &DeviceKey) -> Result<VaultKey> {
+    fn decrypt_vault_key(
+        &self,
+        _encrypted_vault_key: &[u8],
+        _device_key: &DeviceKey,
+    ) -> Result<VaultKey> {
         // TODO: Implement proper decryption with the device's private key
         // For now, return a placeholder vault key
         Ok([0u8; 32])
     }
 
     /// Generate authorization token
-    fn generate_auth_token(&self, request: &LinkingRequest, _device_key: &DeviceKey) -> Result<Vec<u8>> {
+    fn generate_auth_token(
+        &self,
+        request: &LinkingRequest,
+        _device_key: &DeviceKey,
+    ) -> Result<Vec<u8>> {
         // TODO: Implement proper token generation and signing
         // For now, return a placeholder
         Ok(format!("auth_token_for_{}", request.device_id).into_bytes())
@@ -220,7 +231,9 @@ impl DeviceLinkingManager {
         // TODO: Validate the authorization token signature
         // For now, just check that it's not empty
         if response.auth_token.is_empty() {
-            return Err(Error::DeviceLinking("Empty authorization token".to_string()));
+            return Err(Error::DeviceLinking(
+                "Empty authorization token".to_string(),
+            ));
         }
 
         Ok(())
@@ -267,12 +280,9 @@ mod tests {
         let public_key = vec![1, 2, 3, 4, 5];
         let endpoint = "127.0.0.1:8080".to_string();
 
-        let qr_data = manager.generate_linking_qr(
-            device_id.clone(),
-            device_name,
-            public_key,
-            endpoint,
-        ).unwrap();
+        let qr_data = manager
+            .generate_linking_qr(device_id.clone(), device_name, public_key, endpoint)
+            .unwrap();
 
         assert_eq!(qr_data.request.device_id, device_id);
         assert_eq!(qr_data.version, "1.0.0");
@@ -288,12 +298,9 @@ mod tests {
         let endpoint = "127.0.0.1:8080".to_string();
 
         // Generate QR code
-        manager.generate_linking_qr(
-            device_id.clone(),
-            device_name,
-            public_key,
-            endpoint,
-        ).unwrap();
+        manager
+            .generate_linking_qr(device_id.clone(), device_name, public_key, endpoint)
+            .unwrap();
 
         // Check pending requests
         let pending = manager.get_pending_requests();

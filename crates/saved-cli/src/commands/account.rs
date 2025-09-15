@@ -1,10 +1,10 @@
 //! Account management commands
 
+use crate::utils::formatting::{print_section_header, print_success};
 use anyhow::Result;
 use colored::*;
 use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
-use crate::utils::formatting::{print_success, print_section_header};
 
 /// Initialize a new SAVED account
 pub async fn init_command(account_path: &PathBuf, name: &str, verbose: bool) -> Result<()> {

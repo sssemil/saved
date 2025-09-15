@@ -1,11 +1,11 @@
 //! Import/export commands
 
+use crate::utils::formatting::print_warning;
+use crate::utils::validation::validate_file_path;
 use anyhow::Result;
 use colored::*;
 use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
-use crate::utils::validation::validate_file_path;
-use crate::utils::formatting::print_warning;
 
 /// Export messages to JSON
 pub async fn export_command(account_path: &PathBuf, output: &PathBuf, verbose: bool) -> Result<()> {
@@ -40,13 +40,15 @@ pub async fn export_command(account_path: &PathBuf, output: &PathBuf, verbose: b
     // Map messages to export-friendly JSON
     let messages_json: Vec<serde_json::Value> = messages
         .into_iter()
-        .map(|m| serde_json::json!({
-            "id": hex::encode(m.id.as_bytes()),
-            "content": m.content,
-            "created_at": m.created_at.to_rfc3339(),
-            "is_deleted": m.is_deleted,
-            "is_purged": m.is_purged,
-        }))
+        .map(|m| {
+            serde_json::json!({
+                "id": hex::encode(m.id.as_bytes()),
+                "content": m.content,
+                "created_at": m.created_at.to_rfc3339(),
+                "is_deleted": m.is_deleted,
+                "is_purged": m.is_purged,
+            })
+        })
         .collect();
 
     // Create export data structure
@@ -69,7 +71,13 @@ pub async fn export_command(account_path: &PathBuf, output: &PathBuf, verbose: b
         output.display().to_string().bright_blue()
     );
     if verbose {
-        println!("Exported {} messages", export_data["messages"].as_array().map(|a| a.len()).unwrap_or(0));
+        println!(
+            "Exported {} messages",
+            export_data["messages"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
     }
 
     Ok(())
@@ -132,9 +140,11 @@ pub async fn import_command(account_path: &PathBuf, input: &PathBuf, verbose: bo
                 if verbose {
                     println!("Processing message {}: {}", i + 1, message);
                 }
-                
+
                 // Validate message structure (support both `body` and `content` keys)
-                let body_field = message.get("body").and_then(|v| v.as_str())
+                let body_field = message
+                    .get("body")
+                    .and_then(|v| v.as_str())
                     .or_else(|| message.get("content").and_then(|v| v.as_str()));
                 if let Some(body) = body_field {
                     // Validate message content
@@ -145,30 +155,35 @@ pub async fn import_command(account_path: &PathBuf, input: &PathBuf, verbose: bo
                         skipped_count += 1;
                         continue;
                     }
-                    
+
                     // Check message length
                     if body.len() > 10000 {
                         if verbose {
-                            println!("  ⚠ Skipping message {} (too long: {} chars)", i + 1, body.len());
+                            println!(
+                                "  ⚠ Skipping message {} (too long: {} chars)",
+                                i + 1,
+                                body.len()
+                            );
                         }
                         skipped_count += 1;
                         continue;
                     }
-                    
+
                     // Import message using the core library
                     match account.create_message(body.to_string(), Vec::new()).await {
                         Ok(_) => {
                             imported_count += 1;
                             if verbose {
-                                println!("  ✓ Imported: {}", 
-                                    if body.len() > 50 { 
-                                        format!("{}...", &body[..50]) 
-                                    } else { 
-                                        body.to_string() 
+                                println!(
+                                    "  ✓ Imported: {}",
+                                    if body.len() > 50 {
+                                        format!("{}...", &body[..50])
+                                    } else {
+                                        body.to_string()
                                     }
                                 );
                             }
-                        },
+                        }
                         Err(e) => {
                             println!("  ✗ Failed to import message {}: {}", i + 1, e);
                             skipped_count += 1;
@@ -181,8 +196,11 @@ pub async fn import_command(account_path: &PathBuf, input: &PathBuf, verbose: bo
                     skipped_count += 1;
                 }
             }
-            
-            println!("Import summary: {} imported, {} skipped", imported_count, skipped_count);
+
+            println!(
+                "Import summary: {} imported, {} skipped",
+                imported_count, skipped_count
+            );
         }
     }
 
@@ -221,10 +239,15 @@ mod tests {
             account_passphrase: None,
         };
         let mut handle = create_or_open_account(config).await.unwrap();
-        handle.create_message("hello from test".to_string(), Vec::new()).await.unwrap();
+        handle
+            .create_message("hello from test".to_string(), Vec::new())
+            .await
+            .unwrap();
 
         // Export
-        export_command(&account_path, &export_path, true).await.unwrap();
+        export_command(&account_path, &export_path, true)
+            .await
+            .unwrap();
         let json = std::fs::read_to_string(&export_path).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v["messages"].as_array().unwrap().len() >= 1);
@@ -232,10 +255,15 @@ mod tests {
         // Import into a new account path
         let import_account_path = temp_dir.path().join("acc2");
         std::fs::create_dir_all(&import_account_path).unwrap();
-        import_command(&import_account_path, &export_path, true).await.unwrap();
+        import_command(&import_account_path, &export_path, true)
+            .await
+            .unwrap();
 
         // Verify imported message exists
-        let config2 = Config { storage_path: import_account_path.clone(), ..Config::default() };
+        let config2 = Config {
+            storage_path: import_account_path.clone(),
+            ..Config::default()
+        };
         let handle2 = create_or_open_account(config2).await.unwrap();
         let msgs = handle2.list_messages().await.unwrap();
         assert!(msgs.iter().any(|m| m.content == "hello from test"));
