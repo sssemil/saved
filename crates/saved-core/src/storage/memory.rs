@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 
 use super::trait_impl::{Storage, StorageStats, Attachment};
 use crate::error::{Error, Result};
+use crate::error_recovery::ErrorRecoveryManager;
 use crate::events::Op;
 use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
@@ -24,6 +25,7 @@ pub struct MemoryStorage {
     device_key: Arc<RwLock<Option<Vec<u8>>>>,
     attachments: Arc<RwLock<HashMap<i64, Attachment>>>,
     attachment_chunks: Arc<RwLock<HashMap<i64, Vec<[u8; 32]>>>>,
+    error_recovery: Arc<RwLock<ErrorRecoveryManager>>,
 }
 
 impl MemoryStorage {
@@ -42,6 +44,7 @@ impl MemoryStorage {
             device_key: Arc::new(RwLock::new(None)),
             attachments: Arc::new(RwLock::new(HashMap::new())),
             attachment_chunks: Arc::new(RwLock::new(HashMap::new())),
+            error_recovery: Arc::new(RwLock::new(ErrorRecoveryManager::new())),
         }
     }
 }
@@ -641,4 +644,5 @@ mod tests {
         assert!(!retrieved.has_private_key);
         assert!(retrieved.expires_at.is_some());
     }
+
 }

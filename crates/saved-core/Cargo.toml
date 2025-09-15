@@ -67,6 +67,7 @@ hex = "0.4"
 base64 = "0.21"
 url = "2.5"
 pathdiff = "0.2"
+fastrand = "2.0"
 
 # QR code generation removed - not used in core library
 

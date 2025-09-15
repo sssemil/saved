@@ -132,6 +132,7 @@ pub trait Storage: Send + Sync {
 
     /// Garbage collect orphaned chunks and attachments
     async fn garbage_collect_attachments(&self) -> Result<GarbageCollectionStats>;
+
 }
 
 /// Storage statistics

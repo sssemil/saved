@@ -6,6 +6,7 @@
 //! - Reference counting for garbage collection
 
 use crate::error::{Error, Result};
+use crate::error_recovery::ErrorRecoveryManager;
 use crate::events::Op;
 use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
@@ -30,7 +31,9 @@ pub struct SqliteStorage {
     /// Path to the chunks directory
     chunks_path: PathBuf,
     /// Reference counts for chunks
-    chunk_refs: Mutex<HashMap<ChunkId, u32>>, 
+    chunk_refs: Mutex<HashMap<ChunkId, u32>>,
+    /// Error recovery manager
+    error_recovery: Arc<Mutex<ErrorRecoveryManager>>,
 }
 
 impl SqliteStorage {
@@ -56,6 +59,7 @@ impl SqliteStorage {
             db: Arc::new(Mutex::new(db)),
             chunks_path,
             chunk_refs: Mutex::new(HashMap::new()),
+            error_recovery: Arc::new(Mutex::new(ErrorRecoveryManager::new())),
         };
 
         storage.init_schema()?;
@@ -1352,4 +1356,5 @@ mod tests {
         storage.revoke_device_authorization("dev1").await.unwrap();
         assert!(!storage.is_device_authorized("dev1").await.unwrap());
     }
+
 }

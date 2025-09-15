@@ -5,6 +5,7 @@
 //! relay connections, and gossipsub messaging.
 
 use crate::error::{Error, Result};
+use crate::error_recovery::ErrorRecoveryManager;
 use crate::events::Op;
 use crate::protobuf::*;
 use crate::types::{Event, DeviceInfo};
@@ -228,6 +229,8 @@ pub struct NetworkManager {
     storage: Arc<Mutex<Option<Box<dyn crate::storage::Storage + Send + Sync>>>>,
     /// Chunk availability tracking per peer
     peer_chunk_availability: Arc<Mutex<HashMap<String, HashSet<[u8; 32]>>>>,
+    /// Error recovery manager
+    error_recovery: Arc<Mutex<ErrorRecoveryManager>>,
 
     swarm: Arc<Mutex<Option<Swarm<net_behaviour::NetBehaviour>>>>,
 }
@@ -254,6 +257,7 @@ impl NetworkManager {
             peer_groups: Arc::new(Mutex::new(HashMap::new())),
             storage: Arc::new(Mutex::new(None)),
             peer_chunk_availability: Arc::new(Mutex::new(HashMap::new())),
+            error_recovery: Arc::new(Mutex::new(ErrorRecoveryManager::new())),
 
             swarm: Arc::new(Mutex::new(None)),
         })
@@ -1792,7 +1796,7 @@ impl NetworkManager {
         }
 
         // Request chunk availability from first connected peer
-        if let Some(peer_id) = connected_peer_ids.first() {
+        if connected_peer_ids.first().is_some() {
             self.request_chunk_availability(missing_chunks).await?;
         }
 
@@ -2654,5 +2658,6 @@ mod tests {
         
         println!("Message handling test passed!");
     }
+
 
 }
