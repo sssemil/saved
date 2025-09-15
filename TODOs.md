@@ -115,6 +115,10 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [x] Add real networking event loop with proper error handling
 - [x] Implement real peer discovery and connection management
 - [x] Add smoke test for real networking functionality
+- [x] Implement real message handling for SAVED protocols
+- [x] Add gossipsub message sending and receiving
+- [x] Implement SAVED message parsing (heads, ops, chunks)
+- [x] Fix network event loop structure
 
 ### **crates/saved-core-rs/src/sync.rs**
 - [ ] Implement real CRDT conflict resolution
@@ -144,7 +148,8 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - ✅ **Code Quality**: Improved with better integration of utility functions
 - ✅ **CLI Enhancement**: Better user experience with consistent formatting and validation
 - ✅ **Networking**: Full libp2p integration with real mDNS, DCUtR, relay, and gossipsub
-- 🚧 **Core Functionality**: Placeholder implementations need real functionality
+- ✅ **Message Handling**: Real SAVED protocol message parsing and gossipsub integration
+- 🚧 **Core Functionality**: CRDT conflict resolution and event synchronization outstanding
 - 🚧 **Storage**: CRDT event persistence outstanding
 - 🚧 **Device Management**: Authentication and linking incomplete
 
@@ -155,4 +160,4 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [ ] Phase 3: Device Management (0/3 completed)
 - [ ] Phase 4: Advanced Features (0/3 completed)
 
-**Overall Progress**: 6/12 major components completed
+**Overall Progress**: 7/12 major components completed

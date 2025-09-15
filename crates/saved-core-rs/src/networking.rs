@@ -593,34 +593,25 @@ impl NetworkManager {
                     }
                 }
                 
-                // Handle message outside of the swarm lock
-                if let Some((peer_id, message_data)) = message_to_handle {
-                    self.handle_incoming_message(peer_id, message_data).await;
-                }
+            // Handle message outside of the swarm lock
+            if let Some((peer_id, message_data)) = message_to_handle {
+                self.handle_incoming_message(peer_id, message_data).await;
             }
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        let mut stats_counter = 0;
-        
-        loop {
-            interval.tick().await;
-            stats_counter += 1;
             
             // Perform periodic network maintenance tasks
             self.perform_network_maintenance().await?;
             
-            // Send periodic network statistics updates
-            if stats_counter % 12 == 0 { // Every minute (12 * 5 seconds)
-                self.send_network_stats_update().await?;
+            // Send periodic network statistics updates (every 60 iterations = 5 minutes)
+            static mut STATS_COUNTER: u32 = 0;
+            unsafe {
+                STATS_COUNTER += 1;
+                if STATS_COUNTER % 60 == 0 {
+                    self.send_network_stats_update().await?;
+                }
             }
             
             // Check for peer health and connection status
             self.check_peer_health().await?;
-            
-            // In a real implementation, this would also handle:
-            // - Incoming network messages
-            // - Connection state changes
-            // - Protocol-specific event handling
-            // - Message routing and forwarding
         }
     }
 
@@ -1408,15 +1399,125 @@ impl NetworkManager {
 
     /// Handle incoming message from a peer
     pub async fn handle_incoming_message(&mut self, peer_id: PeerId, data: Vec<u8>) {
-        // TODO: Implement message handling
         println!("Received message from {}: {} bytes", peer_id, data.len());
+        
+        // Try to parse as SAVED protocol message
+        match self.parse_saved_message(&data).await {
+            Ok(message_type) => {
+                match message_type {
+                    SavedMessageType::AnnounceHeads(announce) => {
+                        println!("Received head announcement: feed={}, lamport={}, heads={}", 
+                                announce.feed_id, announce.lamport, announce.heads.len());
+                        // TODO: Process head announcement and trigger sync if needed
+                    }
+                    SavedMessageType::FetchOpsReq(req) => {
+                        println!("Received ops fetch request: since_heads={}, want_max={}", 
+                                req.since_heads.len(), req.want_max);
+                        // TODO: Respond with requested operations
+                    }
+                    SavedMessageType::FetchOpsResp(resp) => {
+                        println!("Received ops fetch response: ops={}, new_heads={}", 
+                                resp.ops.len(), resp.new_heads.len());
+                        // TODO: Process received operations
+                    }
+                    SavedMessageType::HaveChunksReq(req) => {
+                        println!("Received chunk availability request: cids={}", req.cids.len());
+                        // TODO: Respond with chunk availability
+                    }
+                    SavedMessageType::HaveChunksResp(resp) => {
+                        println!("Received chunk availability response: bitmap={} bytes", 
+                                resp.have_bitmap.len());
+                        // TODO: Process chunk availability and request missing chunks
+                    }
+                    SavedMessageType::FetchChunksReq(req) => {
+                        println!("Received chunk fetch request: cids={}", req.cids.len());
+                        // TODO: Respond with requested chunks
+                    }
+                    SavedMessageType::FetchChunksResp(resp) => {
+                        println!("Received chunk fetch response: chunks={}", resp.chunks.len());
+                        // TODO: Process received chunks
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Failed to parse SAVED message: {}", e);
+                // Could be a different protocol or malformed data
+            }
+        }
     }
+
+    /// Parse incoming data as a SAVED protocol message
+    async fn parse_saved_message(&self, data: &[u8]) -> Result<SavedMessageType> {
+        // Try to parse as different SAVED message types
+        if let Ok(announce) = AnnounceHeads::decode(data) {
+            return Ok(SavedMessageType::AnnounceHeads(announce));
+        }
+        
+        if let Ok(req) = FetchOpsReq::decode(data) {
+            return Ok(SavedMessageType::FetchOpsReq(req));
+        }
+        
+        if let Ok(resp) = FetchOpsResp::decode(data) {
+            return Ok(SavedMessageType::FetchOpsResp(resp));
+        }
+        
+        if let Ok(req) = HaveChunksReq::decode(data) {
+            return Ok(SavedMessageType::HaveChunksReq(req));
+        }
+        
+        if let Ok(resp) = HaveChunksResp::decode(data) {
+            return Ok(SavedMessageType::HaveChunksResp(resp));
+        }
+        
+        if let Ok(req) = FetchChunksReq::decode(data) {
+            return Ok(SavedMessageType::FetchChunksReq(req));
+        }
+        
+        if let Ok(resp) = FetchChunksResp::decode(data) {
+            return Ok(SavedMessageType::FetchChunksResp(resp));
+        }
+        
+        Err(Error::Network("Unknown SAVED message type".to_string()))
+    }
+
+    /// Send a message through gossipsub
+    pub async fn send_gossipsub_message(&mut self, topic: &str, data: Vec<u8>) -> Result<()> {
+        if let Some(swarm) = self.swarm.lock().await.as_mut() {
+            let topic = gossipsub::IdentTopic::new(topic);
+            swarm.behaviour_mut().gossipsub.publish(topic, data)
+                .map_err(|e| Error::Network(format!("Failed to publish message: {}", e)))?;
+        }
+        Ok(())
+    }
+
+    /// Subscribe to a gossipsub topic
+    pub async fn subscribe_to_topic(&mut self, topic: &str) -> Result<()> {
+        if let Some(swarm) = self.swarm.lock().await.as_mut() {
+            let topic = gossipsub::IdentTopic::new(topic);
+            swarm.behaviour_mut().gossipsub.subscribe(&topic)
+                .map_err(|e| Error::Network(format!("Failed to subscribe to topic: {}", e)))?;
+        }
+        Ok(())
+    }
+}
+
+/// Enum for different SAVED message types
+#[derive(Debug)]
+pub enum SavedMessageType {
+    AnnounceHeads(AnnounceHeads),
+    FetchOpsReq(FetchOpsReq),
+    FetchOpsResp(FetchOpsResp),
+    HaveChunksReq(HaveChunksReq),
+    HaveChunksResp(HaveChunksResp),
+    FetchChunksReq(FetchChunksReq),
+    FetchChunksResp(FetchChunksResp),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::DeviceKey;
+    use crate::events::EventLog;
 
     #[tokio::test]
     async fn test_network_manager_creation() {
@@ -2055,6 +2156,43 @@ mod tests {
             }
             _ => panic!("Expected PeerTagRemoved event"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_message_handling() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        
+        let network_manager = NetworkManager::new(device_key, event_sender).await.unwrap();
+        
+        // Test parsing a head announcement message
+        let announce = AnnounceHeads {
+            feed_id: "test_feed".to_string(),
+            lamport: 42,
+            heads: vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8]],
+        };
+        
+        let mut data = Vec::new();
+        announce.encode(&mut data).unwrap();
+        
+        let result = network_manager.parse_saved_message(&data).await;
+        assert!(result.is_ok());
+        
+        match result.unwrap() {
+            SavedMessageType::AnnounceHeads(parsed) => {
+                assert_eq!(parsed.feed_id, "test_feed");
+                assert_eq!(parsed.lamport, 42);
+                assert_eq!(parsed.heads.len(), 2);
+            }
+            _ => panic!("Expected AnnounceHeads message type"),
+        }
+        
+        // Test parsing invalid data
+        let invalid_data = b"invalid message data";
+        let result = network_manager.parse_saved_message(invalid_data).await;
+        assert!(result.is_err());
+        
+        println!("Message handling test passed!");
     }
 
 }
