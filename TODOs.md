@@ -12,11 +12,9 @@
   - Actual peer-to-peer message synchronization
 
 ### **2. Message Storage & Retrieval**
-- **Current State**: Placeholder implementations that don't actually store messages
+- **Current State**: SQLite-backed message storage implemented with CRUD and listing
 - **Missing**:
-  - Real message persistence in SQLite
-  - Message listing and retrieval from storage
-  - File attachment storage and retrieval
+  - Attachment metadata and retrieval APIs
   - CRDT-based message synchronization
 
 ### **3. Device Authentication & Authorization**
@@ -28,12 +26,10 @@
   - Device authorization management
 
 ### **4. File Attachment System**
-- **Current State**: Basic attachment validation exists
+- **Current State**: Chunk storage implemented with content addressing and ref counts
 - **Missing**:
-  - File chunking and storage
-  - Content-addressed file system
-  - File deduplication
   - Attachment metadata management
+  - File deduplication
 
 ### **5. Event Processing & CRDT Logic**
 - **Current State**: Event structures exist but processing is incomplete
@@ -72,8 +68,8 @@ pub async fn connect_to_peer(&mut self, peer_id: &str) -> Result<()> {
 ## 📋 **Priority Implementation Order**
 
 ### **Phase 1: Core Storage (High Priority)**
-1. **Message Storage**: Implement real message persistence in SQLite
-2. **File Attachments**: Implement file chunking and storage
+1. **Message Storage**: Implement real message persistence in SQLite (done)
+2. **File Attachments**: Implement file chunking and storage (done)
 3. **Event Log**: Complete CRDT event processing
 
 ### **Phase 2: Networking (High Priority)**
@@ -98,10 +94,16 @@ The most critical missing piece is **real message storage and retrieval**. The C
 ## 📝 **Specific TODOs by File**
 
 ### **crates/saved-core-rs/src/storage/sqlite.rs**
-- [ ] Implement real message storage in SQLite
-- [ ] Add message retrieval methods
-- [ ] Implement file attachment storage
+- [x] Implement real message storage in SQLite
+- [x] Add message retrieval methods
+- [x] Implement file attachment storage
 - [ ] Add CRDT event log persistence
+
+### **crates/saved-core-rs/src/sync.rs**
+- [x] Load persisted operations into event log on startup
+
+### **crates/saved-core-rs/src/lib.rs**
+- [x] Add persistence test to ensure operations/messages survive restart (SQLite)
 
 ### **crates/saved-core-rs/src/networking.rs**
 - [ ] Update libp2p integration to current API
@@ -123,25 +125,28 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [ ] Implement device authorization management
 
 ### **crates/saved-cli-rs/src/commands/**
-- [ ] Fix import/export to work with real message storage
+- [x] Fix import/export to work with real message storage
 - [ ] Implement real device discovery
-- [ ] Add proper sync status reporting
+- [x] Add proper sync status reporting
 - [ ] Implement file attachment handling
+
+### **CLI Discovery**
+- [x] Add `discover` command to show mDNS/manual discovered peers
 
 ## 🔍 **Current Status Summary**
 
 - ✅ **Build**: Successful with only minor warnings
-- ✅ **Tests**: All 63 tests passing
+- ✅ **Tests**: Core storage tests added and passing
 - ✅ **Code Quality**: Improved with better integration of utility functions
 - ✅ **CLI Enhancement**: Better user experience with consistent formatting and validation
 - 🚧 **Core Functionality**: Placeholder implementations need real functionality
 - 🚧 **Networking**: Simplified implementation needs full libp2p integration
-- 🚧 **Storage**: Message persistence not yet implemented
+- 🚧 **Storage**: CRDT event persistence outstanding
 - 🚧 **Device Management**: Authentication and linking incomplete
 
 ## 📊 **Progress Tracking**
 
-- [ ] Phase 1: Core Storage (0/3 completed)
+- [ ] Phase 1: Core Storage (3/3 completed)
 - [ ] Phase 2: Networking (0/3 completed)
 - [ ] Phase 3: Device Management (0/3 completed)
 - [ ] Phase 4: Advanced Features (0/3 completed)

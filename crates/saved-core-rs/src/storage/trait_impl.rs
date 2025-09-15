@@ -86,6 +86,15 @@ pub trait Storage: Send + Sync {
 
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
+
+    /// Store attachment metadata and its chunk mapping
+    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64>;
+
+    /// Get attachments for a message
+    async fn get_attachments_for_message(&self, message_id: &MessageId) -> Result<Vec<Attachment>>;
+
+    /// Get chunk ids for an attachment
+    async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>>;
 }
 
 /// Storage statistics
@@ -95,4 +104,14 @@ pub struct StorageStats {
     pub message_count: usize,
     pub chunk_count: usize,
     pub total_size: u64,
+}
+
+/// Attachment metadata
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub id: i64,
+    pub message_id: MessageId,
+    pub filename: String,
+    pub size: u64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }

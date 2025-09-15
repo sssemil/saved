@@ -275,6 +275,9 @@ impl AccountHandle {
             device_key,
         );
 
+        // Load persisted operations into the event log
+        sync_manager.initialize().await?;
+
         // Initialize account key if provided
         if let Some(account_key) = account_key {
             // Store the account key (encrypted with passphrase)
@@ -679,13 +682,15 @@ impl AccountHandle {
             self.network_manager = Some(network_manager);
         }
         
-        // Start listening on default addresses
+        // Start listening on default addresses and enable discovery and peer management
         if let Some(ref mut network_manager) = self.network_manager {
             let default_addresses = vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_string(),
                 "/ip4/0.0.0.0/tcp/0".to_string(),
             ];
             network_manager.start_listening(default_addresses).await?;
+            let _ = network_manager.start_discovery().await; // best-effort
+            let _ = network_manager.start_peer_management().await; // best-effort
         }
         
         Ok(())
@@ -816,6 +821,83 @@ impl AccountHandle {
     pub async fn list_messages(&self) -> crate::Result<Vec<Message>> {
         // Use the same storage instance that the sync manager is using
         self.sync_manager.get_all_messages().await
+    }
+
+    /// Get storage statistics
+    pub async fn storage_stats(&self) -> crate::Result<crate::storage::trait_impl::StorageStats> {
+        self.sync_manager.storage().get_stats().await
+    }
+
+    /// Get the number of connected peers (0 if network not started)
+    pub async fn connected_peers_count(&self) -> u32 {
+        if let Some(ref nm) = self.network_manager {
+            nm.get_connected_peers().await.len() as u32
+        } else {
+            0
+        }
+    }
+
+    /// Get discovered peers (empty if network not started)
+    pub async fn discovered_peers(&self) -> std::collections::HashMap<String, crate::networking::DiscoveryInfo> {
+        if let Some(ref nm) = self.network_manager {
+            nm.get_discovered_peers().await
+        } else {
+            std::collections::HashMap::new()
+        }
+    }
+
+    /// Get connected peers with basic info
+    pub async fn connected_peers(&self) -> std::collections::HashMap<String, DeviceInfo> {
+        if let Some(ref nm) = self.network_manager {
+            nm.get_connected_peers().await
+        } else {
+            std::collections::HashMap::new()
+        }
+    }
+
+    /// Get peer health as string, if available
+    pub async fn peer_health(&self, device_id: &str) -> Option<String> {
+        if let Some(ref nm) = self.network_manager {
+            nm.get_peer_health(device_id).await.map(|h| format!("{:?}", h))
+        } else {
+            None
+        }
+    }
+
+    /// Get peer connection state as string, if available
+    pub async fn peer_connection_state(&self, device_id: &str) -> Option<String> {
+        if let Some(ref nm) = self.network_manager {
+            nm.get_peer_connection_state(device_id).await.map(|s| format!("{:?}", s))
+        } else {
+            None
+        }
+    }
+
+    /// For testing and manual addition: add a discovered peer to the network manager
+    pub async fn add_discovered_peer(&mut self, device_id: String, addresses: Vec<String>, method: crate::networking::DiscoveryMethod) -> crate::Result<()> {
+        if let Some(ref mut nm) = self.network_manager {
+            nm.add_discovered_peer(device_id, addresses, method).await
+        } else {
+            Err(crate::error::Error::Network("Network manager not initialized".to_string()))
+        }
+    }
+
+    /// Attempt to connect to a peer
+    pub async fn connect_to_peer(&mut self, device_id: String, addresses: Vec<String>) -> crate::Result<()> {
+        if let Some(ref mut nm) = self.network_manager {
+            nm.connect_to_peer(device_id, addresses).await
+        } else {
+            Err(crate::error::Error::Network("Network manager not initialized".to_string()))
+        }
+    }
+
+    /// Scan local network for peers and return discovered info
+    pub async fn scan_local_network(&mut self) -> crate::Result<Vec<crate::networking::DiscoveryInfo>> {
+        if let Some(ref mut nm) = self.network_manager {
+            nm.scan_local_network().await
+        } else {
+            Err(crate::error::Error::Network("Network manager not initialized".to_string()))
+        }
     }
 
     /// Get sync manager (for testing)

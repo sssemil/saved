@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::trait_impl::{Storage, StorageStats};
+use super::trait_impl::{Storage, StorageStats, Attachment};
 use crate::error::{Error, Result};
 use crate::events::Op;
 use crate::types::{Message, MessageId};
@@ -20,6 +20,8 @@ pub struct MemoryStorage {
     authorized_devices: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     device_certificate: Arc<RwLock<Option<crate::crypto::DeviceCert>>>,
     device_key: Arc<RwLock<Option<Vec<u8>>>>,
+    attachments: Arc<RwLock<HashMap<i64, Attachment>>>,
+    attachment_chunks: Arc<RwLock<HashMap<i64, Vec<[u8; 32]>>>>,
 }
 
 impl MemoryStorage {
@@ -35,6 +37,8 @@ impl MemoryStorage {
             authorized_devices: Arc::new(RwLock::new(HashMap::new())),
             device_certificate: Arc::new(RwLock::new(None)),
             device_key: Arc::new(RwLock::new(None)),
+            attachments: Arc::new(RwLock::new(HashMap::new())),
+            attachment_chunks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -251,6 +255,31 @@ impl Storage for MemoryStorage {
             chunk_count: chunks.len(),
             total_size,
         })
+    }
+
+    async fn store_attachment(&self, message_id: &crate::types::MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+        let mut atts = self.attachments.write().await;
+        let mut att_chunks = self.attachment_chunks.write().await;
+        let new_id = (atts.len() as i64) + 1;
+        atts.insert(new_id, Attachment {
+            id: new_id,
+            message_id: *message_id,
+            filename: filename.to_string(),
+            size,
+            created_at: chrono::Utc::now(),
+        });
+        att_chunks.insert(new_id, chunk_ids.clone());
+        Ok(new_id)
+    }
+
+    async fn get_attachments_for_message(&self, message_id: &crate::types::MessageId) -> Result<Vec<Attachment>> {
+        let atts = self.attachments.read().await;
+        Ok(atts.values().filter(|a| &a.message_id == message_id).cloned().collect())
+    }
+
+    async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>> {
+        let att_chunks = self.attachment_chunks.read().await;
+        Ok(att_chunks.get(&attachment_id).cloned().unwrap_or_default())
     }
 }
 

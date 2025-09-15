@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 
 use super::trait_impl::{Storage, StorageStats};
+use super::trait_impl::Attachment;
 
 /// Chunk identifier (BLAKE3 hash of plaintext)
 pub type ChunkId = [u8; 32];
@@ -28,7 +29,7 @@ pub struct SqliteStorage {
     /// Path to the chunks directory
     chunks_path: PathBuf,
     /// Reference counts for chunks
-    chunk_refs: HashMap<ChunkId, u32>,
+    chunk_refs: Mutex<HashMap<ChunkId, u32>>, 
 }
 
 impl SqliteStorage {
@@ -44,16 +45,16 @@ impl SqliteStorage {
         let db_path = account_path.join("db.sqlite");
         let db = Connection::open(db_path)?;
 
-        // Enable WAL mode for better concurrency
-        db.execute("PRAGMA journal_mode=WAL", [])?;
-        db.execute("PRAGMA synchronous=NORMAL", [])?;
-        db.execute("PRAGMA cache_size=10000", [])?;
-        db.execute("PRAGMA temp_store=memory", [])?;
+        // Enable WAL mode and other performance pragmas
+        db.pragma_update(None, "journal_mode", &"WAL")?;
+        db.pragma_update(None, "synchronous", &"NORMAL")?;
+        db.pragma_update(None, "cache_size", &10000i64)?;
+        db.pragma_update(None, "temp_store", &"MEMORY")?;
 
         let mut storage = Self {
             db: Arc::new(Mutex::new(db)),
             chunks_path,
-            chunk_refs: HashMap::new(),
+            chunk_refs: Mutex::new(HashMap::new()),
         };
 
         storage.init_schema()?;
@@ -97,6 +98,29 @@ impl SqliteStorage {
             "CREATE TABLE IF NOT EXISTS chunk_refs (
                 chunk_id BLOB PRIMARY KEY,
                 ref_count INTEGER NOT NULL DEFAULT 1
+            )",
+            [],
+        )?;
+
+        // Attachments metadata
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id BLOB NOT NULL,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Attachment chunks mapping
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS attachment_chunks (
+                attachment_id INTEGER NOT NULL,
+                chunk_id BLOB NOT NULL,
+                ord INTEGER NOT NULL,
+                PRIMARY KEY (attachment_id, ord)
             )",
             [],
         )?;
@@ -162,6 +186,15 @@ impl SqliteStorage {
             [],
         )?;
 
+        // Device info table (stores device key material)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS device_info (
+                id INTEGER PRIMARY KEY,
+                device_key BLOB NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -175,12 +208,13 @@ impl SqliteStorage {
             Ok((chunk_id, ref_count))
         })?;
 
+        let mut map = self.chunk_refs.lock().unwrap();
         for row in rows {
             let (chunk_id_bytes, ref_count) = row?;
             if chunk_id_bytes.len() == 32 {
                 let mut chunk_id = [0u8; 32];
                 chunk_id.copy_from_slice(&chunk_id_bytes);
-                self.chunk_refs.insert(chunk_id, ref_count);
+                map.insert(chunk_id, ref_count);
             }
         }
 
@@ -335,6 +369,21 @@ impl Storage for SqliteStorage {
     async fn store_chunk(&self, hash: &[u8; 32], data: &[u8]) -> Result<()> {
         let chunk_path = self.chunks_path.join(hex::encode(hash));
         fs::write(&chunk_path, data)?;
+
+        // Update in-memory ref count map
+        {
+            let mut map = self.chunk_refs.lock().unwrap();
+            let new_count = map.get(hash).copied().unwrap_or(0).saturating_add(1);
+            map.insert(*hash, new_count);
+        }
+
+        // Persist ref count to database
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO chunk_refs (chunk_id, ref_count) VALUES (?, 1)
+             ON CONFLICT(chunk_id) DO UPDATE SET ref_count = ref_count + 1",
+            params![hash.as_slice()],
+        )?;
         Ok(())
     }
 
@@ -723,5 +772,164 @@ impl Storage for SqliteStorage {
             chunk_count,
             total_size,
         })
+    }
+
+    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+        let db = self.db.lock().unwrap();
+        let created_at = chrono::Utc::now().timestamp();
+        db.execute(
+            "INSERT INTO attachments (message_id, filename, size, created_at) VALUES (?, ?, ?, ?)",
+            params![message_id.0.as_slice(), filename, size as i64, created_at],
+        )?;
+
+        let attachment_id: i64 = db.last_insert_rowid();
+
+        for (idx, cid) in chunk_ids.iter().enumerate() {
+            db.execute(
+                "INSERT INTO attachment_chunks (attachment_id, chunk_id, ord) VALUES (?, ?, ?)",
+                params![attachment_id, cid.as_slice(), idx as i64],
+            )?;
+        }
+
+        Ok(attachment_id)
+    }
+
+    async fn get_attachments_for_message(&self, message_id: &MessageId) -> Result<Vec<Attachment>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT id, message_id, filename, size, created_at FROM attachments WHERE message_id = ? ORDER BY created_at")?;
+        let rows = stmt.query_map(params![message_id.0.as_slice()], |row| {
+            let id: i64 = row.get(0)?;
+            let msg_id_bytes: Vec<u8> = row.get(1)?;
+            let filename: String = row.get(2)?;
+            let size: i64 = row.get(3)?;
+            let created_at: i64 = row.get(4)?;
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&msg_id_bytes[..32]);
+            Ok(Attachment {
+                id,
+                message_id: MessageId(id_bytes),
+                filename,
+                size: size as u64,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+            })
+        })?;
+
+        let mut attachments = Vec::new();
+        for row in rows { attachments.push(row?); }
+        Ok(attachments)
+    }
+
+    async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT chunk_id FROM attachment_chunks WHERE attachment_id = ? ORDER BY ord")?;
+        let rows = stmt.query_map(params![attachment_id], |row| {
+            let cid: Vec<u8> = row.get(0)?;
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&cid[..32]);
+            Ok(id)
+        })?;
+        let mut chunk_ids = Vec::new();
+        for row in rows { chunk_ids.push(row?); }
+        Ok(chunk_ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn open_temp_sqlite() -> SqliteStorage {
+        let dir = TempDir::new().unwrap();
+        // Keep directory until test completes to avoid deletion before I/O
+        let path = dir.into_path();
+        SqliteStorage::open(path).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_message_crud() {
+        let storage = open_temp_sqlite();
+
+        let msg = crate::types::Message {
+            id: crate::types::MessageId::new(),
+            content: "hello".to_string(),
+            created_at: chrono::Utc::now(),
+            is_deleted: false,
+            is_purged: false,
+        };
+
+        storage.store_message(&msg).await.unwrap();
+
+        let fetched = storage.get_message(&msg.id).await.unwrap().unwrap();
+        assert_eq!(fetched.content, "hello");
+
+        let all = storage.get_all_messages().await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        storage.delete_message(&msg.id).await.unwrap();
+        let all_after = storage.get_all_messages().await.unwrap();
+        assert_eq!(all_after.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_chunk_store_and_refs() {
+        let storage = open_temp_sqlite();
+        let data = b"some-bytes";
+        let hash = blake3::hash(data).as_bytes().clone();
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&hash);
+
+        // Store twice, ref count should increment in DB; file overwrite is fine
+        storage.store_chunk(&id, data).await.unwrap();
+        storage.store_chunk(&id, data).await.unwrap();
+
+        let exists = storage.has_chunk(&id).await.unwrap();
+        assert!(exists);
+
+        let chunk = storage.get_chunk(&id).await.unwrap().unwrap();
+        assert_eq!(chunk, data);
+    }
+
+    #[tokio::test]
+    async fn test_account_keys_and_device_info() {
+        let storage = open_temp_sqlite();
+
+        // Account key
+        storage.store_account_key(b"encrypted-ak").await.unwrap();
+        let ak = storage.get_account_key().await.unwrap().unwrap();
+        assert_eq!(ak, b"encrypted-ak");
+
+        // Account key info
+        let info = crate::crypto::AccountKeyInfo {
+            public_key: [1u8; 32],
+            created_at: chrono::Utc::now(),
+            expires_at: None,
+            version: 1,
+            has_private_key: true,
+        };
+        storage.store_account_key_info(&info).await.unwrap();
+        let fetched = storage.get_account_key_info().await.unwrap().unwrap();
+        assert_eq!(fetched.public_key, [1u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_authorized_devices_and_device_cert() {
+        let storage = open_temp_sqlite();
+
+        // Device cert roundtrip
+        let account_key = crate::crypto::AccountKey::generate();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let cert = crate::crypto::DeviceCert::new(device_key.public_key_bytes(), &account_key, None).unwrap();
+        storage.store_device_certificate(&cert).await.unwrap();
+        let fetched = storage.get_device_certificate().await.unwrap().unwrap();
+        assert_eq!(fetched.device_pubkey, device_key.public_key_bytes());
+
+        // Authorized devices
+        storage.store_authorized_device("dev1", b"certbytes").await.unwrap();
+        assert!(storage.is_device_authorized("dev1").await.unwrap());
+        let list = storage.get_authorized_devices().await.unwrap();
+        assert!(list.iter().any(|(id, _)| id == "dev1"));
+        storage.revoke_device_authorization("dev1").await.unwrap();
+        assert!(!storage.is_device_authorized("dev1").await.unwrap());
     }
 }

@@ -194,6 +194,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_persistence_across_restart_sqlite() -> Result<()> {
+        // Use a temp dir and force SQLite backend
+        let temp_dir = TempDir::new().unwrap();
+        let account_path = temp_dir.path().join("persist_account");
+        std::fs::create_dir_all(&account_path).unwrap();
+
+        let config = Config {
+            storage_path: account_path.clone(),
+            network_port: 0,
+            enable_mdns: false,
+            allow_public_relays: false,
+            bootstrap_multiaddrs: Vec::new(),
+            use_kademlia: false,
+            chunk_size: 2 * 1024 * 1024,
+            max_parallel_chunks: 4,
+            storage_backend: crate::storage::StorageBackend::Sqlite,
+            account_passphrase: None,
+        };
+
+        // First open: create a message
+        let mut handle = AccountHandle::create_or_open(config.clone()).await?;
+        let msg_id = handle.create_message("persist me".to_string(), Vec::new()).await?;
+
+        // Ensure it's there
+        let messages = handle.list_messages().await?;
+        assert!(messages.iter().any(|m| m.id == msg_id));
+
+        // Drop handle (simulate restart)
+        drop(handle);
+
+        // Second open: same path, SQLite should load operations into event log and messages from DB
+        let handle2 = AccountHandle::create_or_open(config).await?;
+        let messages2 = handle2.list_messages().await?;
+        assert!(messages2.iter().any(|m| m.id == msg_id));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_concurrent_message_editing() -> Result<()> {
         println!("🧪 Testing concurrent message editing...");
 

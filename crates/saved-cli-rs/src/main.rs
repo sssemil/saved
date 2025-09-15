@@ -101,6 +101,16 @@ enum Commands {
     },
     /// Show connected devices
     Devices,
+    /// Discover peers on the local network (mDNS/manual scan)
+    Discover,
+    /// Connect to a discovered peer
+    Connect {
+        /// Device ID to connect to
+        device_id: String,
+        /// Optional addresses to use (fallback to discovered)
+        #[arg(short, long)]
+        address: Vec<String>,
+    },
     /// Show sync status
     Status,
     /// Export messages to JSON
@@ -169,6 +179,12 @@ async fn main() -> Result<()> {
         }
         Commands::Devices => {
             devices_command(&cli.account_path, cli.verbose).await?;
+        }
+        Commands::Discover => {
+            discover_command(&cli.account_path, cli.verbose).await?;
+        }
+        Commands::Connect { device_id, address } => {
+            connect_command(&cli.account_path, &device_id, address, cli.verbose).await?;
         }
         Commands::Status => {
             status_command(&cli.account_path, cli.verbose).await?;

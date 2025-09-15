@@ -6,6 +6,7 @@ use qrcode::QrCode;
 use saved_core_rs::{create_or_open_account, Config, QrPayload};
 use std::path::PathBuf;
 use crate::utils::formatting::{print_success, print_section_header};
+use comfy_table::{Table, presets::UTF8_FULL, Cell};
 
 /// Generate QR code for device linking
 pub async fn link_command(
@@ -210,32 +211,53 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
     // Get device info
     let device_info = account.device_info().await;
 
-    print_section_header("Connected Devices:");
+    print_section_header("Devices:");
 
-    // Show local device
-    println!("• {} (Local)", device_info.device_name.bright_green());
-    println!("  ID: {}", device_info.device_id.bright_blue());
-    println!(
-        "  Status: {}",
-        if device_info.is_online {
-            "Online".green()
-        } else {
-            "Offline".red()
-        }
-    );
-    println!(
-        "  Last seen: {}",
-        device_info
-            .last_seen
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string()
-            .bright_blue()
-    );
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    table.set_header(vec!["Type", "Device ID", "Name", "State", "Health", "Addresses"]);
 
-    println!("\n{}", "Note:".yellow());
-    println!(
-        "Device discovery and connection management is not yet implemented in the core library."
-    );
+    // Local device row
+    table.add_row(vec![
+        Cell::new("Local"),
+        Cell::new(&device_info.device_id),
+        Cell::new(&device_info.device_name),
+        Cell::new("Online"),
+        Cell::new("Healthy"),
+        Cell::new("-"),
+    ]);
+
+    // Connected peers
+    let connected = account.connected_peers().await;
+    for (id, info) in connected.iter() {
+        let state = account.peer_connection_state(id).await.unwrap_or_else(|| "Connected".to_string());
+        let health = account.peer_health(id).await.unwrap_or_else(|| "Unknown".to_string());
+        table.add_row(vec![
+            Cell::new("Connected"),
+            Cell::new(id),
+            Cell::new(&info.device_name),
+            Cell::new(state),
+            Cell::new(health),
+            Cell::new("-"),
+        ]);
+    }
+
+    // Discovered peers (not necessarily connected)
+    let discovered = account.discovered_peers().await;
+    for (id, di) in discovered.iter() {
+        // Skip if already connected and shown
+        if connected.contains_key(id) { continue; }
+        table.add_row(vec![
+            Cell::new("Discovered"),
+            Cell::new(id),
+            Cell::new("-"),
+            Cell::new("Disconnected"),
+            Cell::new("Unknown"),
+            Cell::new(di.addresses.join(", ")),
+        ]);
+    }
+
+    println!("{}", table);
 
     Ok(())
 }

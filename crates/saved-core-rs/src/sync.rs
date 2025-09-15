@@ -43,6 +43,17 @@ impl SyncManager {
         }
     }
 
+    /// Initialize from persisted storage (load operations into the event log)
+    pub async fn initialize(&mut self) -> Result<()> {
+        let ops = self.storage.get_all_operations().await?;
+        for op in ops {
+            // Rebuild event log state by re-adding operations
+            // Ignore errors for duplicates
+            let _ = self.event_log.add_operation(op);
+        }
+        Ok(())
+    }
+
     /// Create a new message
     pub async fn create_message(
         &mut self,
@@ -56,6 +67,10 @@ impl SyncManager {
         for attachment_path in attachments {
             let chunk_cids = self.process_attachment(&attachment_path).await?;
             attachment_cids.extend(chunk_cids);
+            // Store attachment metadata
+            let filename = attachment_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let size = tokio::fs::metadata(&attachment_path).await.map(|m| m.len()).unwrap_or(0);
+            let _ = self.storage.store_attachment(&msg_id, filename, size, &attachment_cids).await;
         }
 
         // Create operation
