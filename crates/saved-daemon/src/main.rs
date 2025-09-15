@@ -10,6 +10,11 @@ use std::path::PathBuf;
 use tokio::signal;
 use tracing::{info, error};
 
+mod server;
+mod port_discovery;
+use server::DaemonServer;
+use port_discovery::{save_control_port, cleanup_control_port};
+
 #[derive(Parser)]
 #[command(name = "saved-daemon")]
 #[command(about = "SAVED daemon for background network management")]
@@ -21,6 +26,10 @@ struct Args {
     /// Network port (0 for random)
     #[arg(long, default_value = "0")]
     network_port: u16,
+    
+    /// Control server port (0 for random)
+    #[arg(long, default_value = "0")]
+    control_port: u16,
     
     /// Enable mDNS discovery
     #[arg(long, default_value = "true")]
@@ -51,6 +60,7 @@ async fn main() -> Result<()> {
     info!("Starting SAVED daemon...");
     info!("Account path: {}", args.account_path.display());
     info!("Network port: {}", args.network_port);
+    info!("Control port: {}", args.control_port);
     
     // Create account configuration
     let config = Config {
@@ -89,6 +99,32 @@ async fn main() -> Result<()> {
     info!("Use 'savedctl status' to check daemon status");
     info!("Use 'savedctl peer list' to see connected peers");
     
+    // Start control server
+    let control_port = if args.control_port == 0 {
+        // Find an available port
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        port
+    } else {
+        args.control_port
+    };
+    
+    info!("Control server will start on port: {}", control_port);
+    
+    // Save control port to file for ctl discovery
+    if let Err(e) = save_control_port(&args.account_path, control_port) {
+        error!("Failed to save control port: {}", e);
+    }
+    
+    // Start control server in background
+    let mut server = DaemonServer::new(account, control_port);
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = server.start().await {
+            error!("Control server error: {}", e);
+        }
+    });
+    
     // Wait for shutdown signal
     match signal::ctrl_c().await {
         Ok(()) => {
@@ -97,6 +133,14 @@ async fn main() -> Result<()> {
         Err(err) => {
             error!("Failed to listen for shutdown signal: {}", err);
         }
+    }
+    
+    // Shutdown server
+    server_handle.abort();
+    
+    // Cleanup control port file
+    if let Err(e) = cleanup_control_port(&args.account_path) {
+        error!("Failed to cleanup control port file: {}", e);
     }
     
     info!("SAVED daemon stopped");

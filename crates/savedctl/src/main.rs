@@ -8,6 +8,21 @@ use saved_core::{AccountHandle, Config, storage::StorageBackend};
 use std::path::PathBuf;
 use colored::*;
 
+mod client;
+use client::{DaemonClient, DaemonRequest, DaemonResponse};
+
+fn load_control_port(account_path: &PathBuf) -> Result<Option<u16>> {
+    let port_file = account_path.join("control.port");
+    
+    if !port_file.exists() {
+        return Ok(None);
+    }
+    
+    let content = std::fs::read_to_string(port_file)?;
+    let port: u16 = content.trim().parse()?;
+    Ok(Some(port))
+}
+
 #[derive(Parser)]
 #[command(name = "savedctl")]
 #[command(about = "SAVED control tool")]
@@ -126,7 +141,26 @@ async fn main() -> Result<()> {
         account_passphrase: cli.passphrase,
     };
     
-    // Open account (read-only for most operations)
+    // Try to connect to daemon first
+    let control_port = load_control_port(&cli.account_path)?;
+    
+    if let Some(port) = control_port {
+        let client = DaemonClient::new(port);
+        if client.is_daemon_running().await {
+            // Use daemon communication
+            match cli.command {
+                Commands::Status => handle_status_via_daemon(&client).await?,
+                Commands::Device { command } => handle_device_via_daemon(&client, command).await?,
+                Commands::Peer { command } => handle_peer_via_daemon(&client, command).await?,
+                Commands::Message { command } => handle_message_via_daemon(&client, command).await?,
+                Commands::Network { command } => handle_network_via_daemon(&client, command).await?,
+            }
+            return Ok(());
+        }
+    }
+    
+    // Fallback to direct database access if daemon not running
+    println!("{}", "Daemon not running, using direct database access".yellow());
     let mut account = AccountHandle::create_or_open(config).await?;
     
     match cli.command {
@@ -340,6 +374,332 @@ async fn handle_network(account: &AccountHandle, command: NetworkCommands) -> Re
             println!("Stopping network...");
             // TODO: Implement network stop
             println!("Network stop not yet implemented.");
+        }
+    }
+    Ok(())
+}
+
+// Daemon communication handlers
+async fn handle_status_via_daemon(client: &DaemonClient) -> Result<()> {
+    let response = client.send_request(DaemonRequest::Status).await?;
+    
+    match response {
+        DaemonResponse::Status {
+            device_id,
+            device_name,
+            authorized,
+            last_seen,
+            connected_peers,
+            discovered_peers,
+            total_messages,
+            total_devices,
+        } => {
+            println!("{}", "SAVED Status".bright_blue().bold());
+            println!("=============");
+            
+            // Device info
+            println!("\n{}", "Device Information".yellow().bold());
+            println!("  Device ID: {}", device_id.bright_blue());
+            println!("  Device Name: {}", device_name.bright_blue());
+            println!("  Authorized: {}", if authorized { "Yes".green() } else { "No".red() });
+            println!("  Last Seen: {}", last_seen.bright_blue());
+            
+            // Network status
+            println!("\n{}", "Network Status".yellow().bold());
+            println!("  Connected Peers: {}", connected_peers.to_string().bright_blue());
+            println!("  Discovered Peers: {}", discovered_peers.to_string().bright_blue());
+            println!("  Network Status: {}", if connected_peers > 0 || discovered_peers > 0 { "Active".green() } else { "Inactive".red() });
+            
+            // Messages
+            println!("\n{}", "Messages".yellow().bold());
+            println!("  Total Messages: {}", total_messages.to_string().bright_blue());
+            
+            // Devices
+            println!("\n{}", "Authorized Devices".yellow().bold());
+            println!("  Total Devices: {}", total_devices.to_string().bright_blue());
+        }
+        DaemonResponse::Error(msg) => {
+            println!("{}", format!("Error: {}", msg).red());
+        }
+        _ => {
+            println!("{}", "Unexpected response type".red());
+        }
+    }
+    
+    Ok(())
+}
+
+async fn handle_device_via_daemon(client: &DaemonClient, command: DeviceCommands) -> Result<()> {
+    match command {
+        DeviceCommands::List => {
+            let response = client.send_request(DaemonRequest::DeviceList).await?;
+            match response {
+                DaemonResponse::DeviceList(devices) => {
+                    println!("{}", "Authorized Devices".bright_blue().bold());
+                    println!("===================");
+                    
+                    if devices.is_empty() {
+                        println!("No authorized devices found.");
+                        return Ok(());
+                    }
+                    
+                    for device in devices {
+                        println!("\n{}", format!("Device: {}", device.device_id).yellow().bold());
+                        println!("  Name: {}", device.device_name.bright_blue());
+                        println!("  Authorized: {}", if device.is_authorized { "Yes".green() } else { "No".red() });
+                        println!("  Last Seen: {}", device.last_seen.bright_blue());
+                        println!("  Online: {}", if device.is_online { "Yes".green() } else { "No".red() });
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        DeviceCommands::Info { device_id } => {
+            let response = client.send_request(DaemonRequest::DeviceInfo { device_id: device_id.clone() }).await?;
+            match response {
+                DaemonResponse::DeviceInfo(Some(device)) => {
+                    println!("{}", format!("Device Info: {}", device_id).bright_blue().bold());
+                    println!("========================");
+                    println!("  Device ID: {}", device.device_id.bright_blue());
+                    println!("  Name: {}", device.device_name.bright_blue());
+                    println!("  Authorized: {}", if device.is_authorized { "Yes".green() } else { "No".red() });
+                    println!("  Last Seen: {}", device.last_seen.bright_blue());
+                    println!("  Online: {}", if device.is_online { "Yes".green() } else { "No".red() });
+                }
+                DaemonResponse::DeviceInfo(None) => {
+                    println!("Device not found: {}", device_id.red());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_peer_via_daemon(client: &DaemonClient, command: PeerCommands) -> Result<()> {
+    match command {
+        PeerCommands::List => {
+            let response = client.send_request(DaemonRequest::PeerList).await?;
+            match response {
+                DaemonResponse::PeerList { connected, discovered } => {
+                    println!("{}", "Peers".bright_blue().bold());
+                    println!("======");
+                    
+                    if !connected.is_empty() {
+                        println!("\n{}", "Connected Peers".green().bold());
+                        for peer in &connected {
+                            println!("  {} ({})", peer.device_name.bright_blue(), peer.device_id.bright_blue());
+                            println!("    Status: {}", "Connected".green());
+                            println!("    Connection: {}", peer.connection_state.as_ref().unwrap_or(&"Unknown".to_string()).bright_blue());
+                            println!("    Health: {}", peer.health.as_ref().unwrap_or(&"Unknown".to_string()).bright_blue());
+                            println!("    Last Seen: {}", peer.last_seen.bright_blue());
+                        }
+                    }
+                    
+                    if !discovered.is_empty() {
+                        println!("\n{}", "Discovered Peers".yellow().bold());
+                        for peer in &discovered {
+                            println!("  {} ({})", format!("Device {}", &peer.device_id[..8]).bright_blue(), peer.device_id.bright_blue());
+                            println!("    Status: {}", "Discovered".yellow());
+                            println!("    Discovery Method: {}", peer.service_type.bright_blue());
+                            println!("    Addresses: {}", peer.addresses.join(", ").bright_blue());
+                        }
+                    }
+                    
+                    if connected.is_empty() && discovered.is_empty() {
+                        println!("No peers found. Use 'savedctl peer scan' to discover peers.");
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        PeerCommands::Connect { device_id } => {
+            let response = client.send_request(DaemonRequest::PeerConnect { device_id: device_id.clone() }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Connecting to peer: {}", device_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        PeerCommands::Disconnect { device_id } => {
+            let response = client.send_request(DaemonRequest::PeerDisconnect { device_id: device_id.clone() }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Disconnecting from peer: {}", device_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        PeerCommands::Scan => {
+            let response = client.send_request(DaemonRequest::PeerScan).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Scanning for peers...");
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_message_via_daemon(client: &DaemonClient, command: MessageCommands) -> Result<()> {
+    match command {
+        MessageCommands::List => {
+            let response = client.send_request(DaemonRequest::MessageList).await?;
+            match response {
+                DaemonResponse::MessageList(messages) => {
+                    println!("{}", "Messages".bright_blue().bold());
+                    println!("========");
+                    
+                    if messages.is_empty() {
+                        println!("No messages found.");
+                        return Ok(());
+                    }
+                    
+                    for message in messages {
+                        println!("\n{}", format!("Message: {}", message.id).yellow().bold());
+                        println!("  Content: {}", message.content.bright_blue());
+                        println!("  Created: {}", message.created_at.bright_blue());
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        MessageCommands::Send { content } => {
+            let response = client.send_request(DaemonRequest::MessageSend { content: content.clone() }).await?;
+            match response {
+                DaemonResponse::MessageSent { message_id } => {
+                    println!("Sending message: {}", content.bright_blue());
+                    println!("Message sent with ID: {}", message_id.bright_green());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        MessageCommands::Delete { message_id } => {
+            let response = client.send_request(DaemonRequest::MessageDelete { message_id: message_id.clone() }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Deleting message: {}", message_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_network_via_daemon(client: &DaemonClient, command: NetworkCommands) -> Result<()> {
+    match command {
+        NetworkCommands::Status => {
+            let response = client.send_request(DaemonRequest::NetworkStatus).await?;
+            match response {
+                DaemonResponse::NetworkStatus { connected_peers, discovered_peers, active } => {
+                    println!("{}", "Network Status".bright_blue().bold());
+                    println!("===============");
+                    println!("  Connected Peers: {}", connected_peers.to_string().bright_blue());
+                    println!("  Discovered Peers: {}", discovered_peers.to_string().bright_blue());
+                    println!("  Network Status: {}", if active { "Active".green() } else { "Inactive".red() });
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        NetworkCommands::Addresses => {
+            let response = client.send_request(DaemonRequest::NetworkAddresses).await?;
+            match response {
+                DaemonResponse::NetworkAddresses(addresses) => {
+                    println!("{}", "Network Addresses".bright_blue().bold());
+                    println!("===================");
+                    for addr in addresses {
+                        println!("  {}", addr.bright_blue());
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        NetworkCommands::Start => {
+            let response = client.send_request(DaemonRequest::NetworkStart).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Starting network...");
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        NetworkCommands::Stop => {
+            let response = client.send_request(DaemonRequest::NetworkStop).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Stopping network...");
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
         }
     }
     Ok(())
