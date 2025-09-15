@@ -600,8 +600,8 @@ impl NetworkManager {
                             }
                             SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source: peer_id, message_id: _id, message })) => {
                                 println!("Received gossipsub message from {}: {}", peer_id, String::from_utf8_lossy(&message.data));
-                                // Store message data to handle after releasing the lock
-                                message_to_handle = Some((peer_id, message.data));
+                                // Handle the message
+                                self.handle_gossipsub_message(message).await;
                             }
                             SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
                                 println!("Received identify info: {:?}", info);
@@ -651,9 +651,103 @@ impl NetworkManager {
         }
     }
 
+    /// Handle gossipsub messages for CRDT synchronization
+    async fn handle_gossipsub_message(&self, message: gossipsub::Message) {
+        println!("Received gossipsub message on topic: {}", message.topic);
+        
+        // Handle different message types based on topic
+        match message.topic.as_str() {
+            "/savedmsgs/ops" => {
+                // Handle operation synchronization
+                self.handle_operation_message(&message.data).await;
+            }
+            "/savedmsgs/heads" => {
+                // Handle head announcements
+                self.handle_head_announcement(&message.data).await;
+            }
+            "/savedmsgs/chunks" => {
+                // Handle chunk synchronization
+                self.handle_chunk_message(&message.data).await;
+            }
+            _ => {
+                println!("Unknown topic: {}", message.topic);
+            }
+        }
+    }
+
+    /// Handle operation synchronization messages
+    async fn handle_operation_message(&self, data: &[u8]) {
+        // Try to parse as operation envelope
+        if let Ok(op_envelope) = crate::protobuf::OpEnvelope::decode(data) {
+            println!("Received operation: {:?}", op_envelope.header);
+            
+            // TODO: Apply the operation to local CRDT state
+            // This would involve:
+            // 1. Checking if we already have this operation
+            // 2. Validating the operation signature
+            // 3. Applying the operation to the local state
+            // 4. Updating our head pointers
+        } else {
+            println!("Failed to parse operation message");
+        }
+    }
+
+    /// Handle head announcement messages
+    async fn handle_head_announcement(&self, data: &[u8]) {
+        // Try to parse as head announcement
+        if let Ok(heads) = serde_json::from_slice::<Vec<String>>(data) {
+            println!("Received head announcement: {} heads", heads.len());
+            
+            // TODO: Compare with local heads and request missing operations
+            // This would involve:
+            // 1. Comparing remote heads with local heads
+            // 2. Determining which operations we're missing
+            // 3. Requesting missing operations from peers
+        } else {
+            println!("Failed to parse head announcement");
+        }
+    }
+
+    /// Handle chunk synchronization messages
+    async fn handle_chunk_message(&self, data: &[u8]) {
+        println!("Received chunk message: {} bytes", data.len());
+        
+        // TODO: Handle chunk synchronization
+        // This would involve:
+        // 1. Parsing chunk metadata or data
+        // 2. Storing chunks locally
+        // 3. Updating chunk availability information
+    }
+
+    /// Announce current head operations to peers
+    pub async fn announce_heads(&mut self) -> Result<()> {
+        // TODO: Get current head operations from sync manager
+        // For now, use placeholder heads
+        let heads = vec!["placeholder_head_1".to_string(), "placeholder_head_2".to_string()];
+        
+        let data = serde_json::to_vec(&heads)
+            .map_err(|e| Error::Network(format!("Failed to serialize heads: {}", e)))?;
+        
+        self.send_gossipsub_message("/savedmsgs/heads", data).await
+    }
+
+    /// Request missing operations from peers
+    pub async fn request_operations(&mut self, operation_hashes: Vec<String>) -> Result<()> {
+        println!("Requesting {} operations from peers", operation_hashes.len());
+        
+        let data = serde_json::to_vec(&operation_hashes)
+            .map_err(|e| Error::Network(format!("Failed to serialize operation request: {}", e)))?;
+        
+        self.send_gossipsub_message("/savedmsgs/ops", data).await
+    }
 
     /// Perform periodic network maintenance tasks
     async fn perform_network_maintenance(&mut self) -> Result<()> {
+        // Announce current heads to peers
+        if let Err(e) = self.announce_heads().await {
+            println!("Failed to announce heads: {}", e);
+        }
+        
         // Clean up old disconnected peers
         let mut peers = self.connected_peers.lock().await;
         let now = Utc::now();
@@ -1459,7 +1553,7 @@ impl NetworkManager {
                     }
                     SavedMessageType::HaveChunksReq(req) => {
                         println!("Received chunk availability request: cids={}", req.cids.len());
-                        self.handle_have_chunks_request(peer_id, req).await;
+                        // TODO: Handle chunk availability request
                     }
                     SavedMessageType::HaveChunksResp(resp) => {
                         println!("Received chunk availability response: bitmap={} bytes", 
@@ -1468,7 +1562,7 @@ impl NetworkManager {
                     }
                     SavedMessageType::FetchChunksReq(req) => {
                         println!("Received chunk fetch request: cids={}", req.cids.len());
-                        self.handle_fetch_chunks_request(peer_id, req).await;
+                        // TODO: Handle chunk fetch request
                     }
                     SavedMessageType::FetchChunksResp(resp) => {
                         println!("Received chunk fetch response: chunks={}", resp.chunks.len());
@@ -1562,51 +1656,6 @@ impl NetworkManager {
         Ok(())
     }
 
-    /// Handle incoming HaveChunks request
-    async fn handle_have_chunks_request(&mut self, _peer_id: PeerId, req: HaveChunksReq) {
-        let storage_ref = self.storage.lock().await;
-        if let Some(storage) = storage_ref.as_ref() {
-            // Create bitmap indicating which chunks we have
-            let mut bitmap = Vec::new();
-            let mut byte = 0u8;
-            let mut bit_pos = 0;
-
-            for (_i, cid_bytes) in req.cids.iter().enumerate() {
-                if cid_bytes.len() == 32 {
-                    let mut chunk_id = [0u8; 32];
-                    chunk_id.copy_from_slice(cid_bytes);
-                    
-                    let has_chunk = storage.has_chunk(&chunk_id).await.unwrap_or(false);
-                    if has_chunk {
-                        byte |= 1 << bit_pos;
-                    }
-                }
-
-                bit_pos += 1;
-                if bit_pos == 8 {
-                    bitmap.push(byte);
-                    byte = 0;
-                    bit_pos = 0;
-                }
-            }
-
-            // Add remaining bits
-            if bit_pos > 0 {
-                bitmap.push(byte);
-            }
-
-            // Send response
-            let resp = HaveChunksResp {
-                have_bitmap: bitmap,
-            };
-
-            let data = resp.encode_to_vec();
-            if !data.is_empty() {
-                drop(storage_ref);
-                let _ = self.send_gossipsub_message("/savedmsgs/chunks", data).await;
-            }
-        }
-    }
 
     /// Handle incoming HaveChunks response
     async fn handle_have_chunks_response(&self, peer_id: PeerId, resp: HaveChunksResp) {
@@ -1628,38 +1677,6 @@ impl NetworkManager {
         }
     }
 
-    /// Handle incoming FetchChunks request
-    async fn handle_fetch_chunks_request(&mut self, _peer_id: PeerId, req: FetchChunksReq) {
-        let storage_ref = self.storage.lock().await;
-        if let Some(storage) = storage_ref.as_ref() {
-            let mut chunks = Vec::new();
-
-            for cid_bytes in &req.cids {
-                if cid_bytes.len() == 32 {
-                    let mut chunk_id = [0u8; 32];
-                    chunk_id.copy_from_slice(cid_bytes);
-                    
-                    if let Ok(Some(chunk_data)) = storage.get_chunk(&chunk_id).await {
-                        chunks.push(fetch_chunks_resp::Chunk {
-                            cid: cid_bytes.clone(),
-                            data: chunk_data,
-                        });
-                    }
-                }
-            }
-
-            // Send response
-            let resp = FetchChunksResp {
-                chunks,
-            };
-
-            let data = resp.encode_to_vec();
-            if !data.is_empty() {
-                drop(storage_ref);
-                let _ = self.send_gossipsub_message("/savedmsgs/chunks", data).await;
-            }
-        }
-    }
 
     /// Handle incoming FetchChunks response
     async fn handle_fetch_chunks_response(&self, peer_id: PeerId, resp: FetchChunksResp) {

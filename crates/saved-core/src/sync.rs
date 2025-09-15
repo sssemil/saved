@@ -50,6 +50,84 @@ impl SyncManager {
         Ok(self.vault_key)
     }
 
+    /// Get current head operations for synchronization
+    pub async fn get_head_operations(&self) -> Vec<OpHash> {
+        // Get all operations from storage
+        if let Ok(operations) = self.storage.get_all_encrypted_operations().await {
+            // Find operations that are not dependencies of other operations
+            let mut heads = Vec::new();
+            let mut all_ops: std::collections::HashSet<OpHash> = std::collections::HashSet::new();
+            
+            // Collect all operation hashes
+            for op_envelope in &operations {
+                if let Some(header) = &op_envelope.header {
+                    // TODO: Use proper hash from header when available
+                    // For now, use a placeholder hash
+                    let hash = blake3_hash(&header.op_id);
+                    all_ops.insert(hash);
+                }
+            }
+            
+            // Find operations that are not dependencies of other operations
+            for op_envelope in &operations {
+                if let Some(header) = &op_envelope.header {
+                    let mut is_head = true;
+                    // TODO: Check dependencies when available
+                    // for dep in &header.dependencies {
+                    //     if all_ops.contains(dep) {
+                    //         is_head = false;
+                    //         break;
+                    //     }
+                    // }
+                    if is_head {
+                        let hash = blake3_hash(&header.op_id);
+                        heads.push(hash);
+                    }
+                }
+            }
+            
+            heads
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Apply operations received from peers
+    pub async fn apply_peer_operations(&mut self, operations: Vec<crate::protobuf::OpEnvelope>) -> Result<()> {
+        for op_envelope in operations {
+            // Check if we already have this operation
+            if let Some(header) = &op_envelope.header {
+                // TODO: Implement has_operation method in storage trait
+                // if self.storage.has_operation(&header.hash).await? {
+                //     continue;
+                // }
+                
+                // TODO: Validate the operation signature
+                // if let Err(e) = op_envelope.verify_signature() {
+                //     println!("Invalid operation signature: {}", e);
+                //     continue;
+                // }
+                
+                // TODO: Decrypt and verify the operation
+                // if let Ok(op) = op_envelope.decrypt_and_verify(&self.vault_key) {
+                //     // Add to event log
+                //     self.event_log.add_operation(op.clone());
+                //     
+                //     // Store the encrypted operation
+                //     self.storage.store_encrypted_operation(&op_envelope).await?;
+                //     
+                //     println!("Applied operation from peer: {:?}", header.hash);
+                // } else {
+                //     println!("Failed to decrypt operation from peer");
+                // }
+                
+                println!("Received operation from peer: {:?}", header.op_id);
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Initialize from persisted storage (load operations into the event log)
     pub async fn initialize(&mut self) -> Result<()> {
         let ops = self.storage.get_all_operations().await?;
