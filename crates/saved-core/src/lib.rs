@@ -47,6 +47,7 @@ pub mod protobuf;
 pub mod storage;
 pub mod sync;
 pub mod types;
+pub mod device_linking;
 
 // Re-export main types and functions
 pub use error::{Error, Result};

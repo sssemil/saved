@@ -19,6 +19,9 @@ pub enum Error {
 
     #[error("Network error: {0}")]
     Network(String),
+    
+    #[error("Device linking error: {0}")]
+    DeviceLinking(String),
 
     #[error("Storage error: {0}")]
     Storage(String),
