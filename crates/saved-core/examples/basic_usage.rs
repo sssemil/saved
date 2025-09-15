@@ -6,7 +6,7 @@
 //! - Edit and delete messages
 //! - Handle events
 
-use saved_core_rs::{create_or_open_account, Config, Event};
+use saved_core::{create_or_open_account, Config, Event};
 use std::path::PathBuf;
 use tokio::time::{sleep, Duration};
 
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 

@@ -1,0 +1,19 @@
+[package]
+name = "savedctl"
+version = "0.1.0"
+edition = "2021"
+description = "SAVED control tool for managing the daemon"
+
+[[bin]]
+name = "savedctl"
+path = "src/main.rs"
+
+[dependencies]
+saved-core = { path = "../saved-core" }
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+colored = "2.0"
+chrono = { version = "0.4", features = ["serde"] }

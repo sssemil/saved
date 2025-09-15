@@ -49,5 +49,6 @@ indicatif = "0.17"
 # Table formatting
 comfy-table = "7.0"
 
+
 [dev-dependencies]
 tempfile = "3.8"

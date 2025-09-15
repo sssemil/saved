@@ -126,7 +126,14 @@ pub async fn connect_to_peer(&mut self, peer_id: &str) -> Result<()> {
 
 ## 🎯 **Immediate Next Steps**
 
-The most critical missing piece is **real message storage and retrieval**. The CLI commands exist but don't actually persist data. This should be the first priority, followed by basic networking to enable device-to-device communication.
+**MAJOR PIVOT**: Transform the CLI into a comprehensive TUI (Terminal User Interface) for full message management, device monitoring, and file attachments. This will provide a complete user experience for the SAVED messaging system.
+
+### **TUI Implementation Plan**
+1. **Message Management View**: List, create, edit, delete messages with real-time updates
+2. **Device Monitoring View**: Show authorized devices, online status, and connection details
+3. **File Attachment Interface**: Upload, download, and manage file attachments
+4. **Navigation System**: Seamless switching between different views
+5. **Real-time Updates**: Live updates for messages, device status, and network events
 
 ## 📝 **Specific TODOs by File**
 
@@ -194,6 +201,15 @@ The most critical missing piece is **real message storage and retrieval**. The C
 
 ### **CLI Discovery**
 - [x] Add `discover` command to show mDNS/manual discovered peers
+
+### **TUI Implementation (NEW)**
+- [ ] Transform CLI into comprehensive TUI with ratatui/crossterm
+- [ ] Implement message list view with create/edit/delete functionality
+- [ ] Add device monitoring view showing authorized devices and online status
+- [ ] Create file attachment interface with upload/download/management
+- [ ] Implement navigation system between different views
+- [ ] Add real-time updates for messages, device status, and network events
+- [ ] Integrate with existing SAVED core networking and storage systems
 
 ## 🔍 **Current Status Summary**
 
