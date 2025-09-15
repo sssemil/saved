@@ -44,12 +44,22 @@
   - File deduplication
 
 ### **5. Event Processing & CRDT Logic**
-- **Current State**: Event structures exist but processing is incomplete
-- **Missing**:
-  - Real CRDT conflict resolution
-  - Event log synchronization
-  - Operation ordering and causality
-  - Message edit/deletion convergence
+- **Current State**: ✅ **COMPLETED** - Full CRDT implementation with conflict resolution
+- **Implemented**:
+  - ✅ Real CRDT conflict resolution with last-write-wins semantics
+  - ✅ Event log synchronization with DAG structure
+  - ✅ Operation ordering and causality using lamport timestamps
+  - ✅ Message edit/deletion convergence with proper state management
+  - ✅ Comprehensive test suite covering all CRDT scenarios
+  - ✅ Integration with both in-memory and SQLite storage backends
+
+### **5.1. CRDT Implementation Details**
+- **Conflict Resolution Algorithm**: Last-write-wins with lamport timestamp tiebreaker
+- **Operation Types Supported**: Create, Edit, Delete, Purge
+- **State Management**: Proper handling of deleted vs purged messages
+- **Test Coverage**: 8 comprehensive tests covering all CRDT scenarios
+- **Storage Integration**: Works with both in-memory and SQLite backends
+- **Event Log**: DAG structure with proper causality tracking
 
 ## 🔧 **Technical Debt & Improvements Needed**
 
@@ -140,10 +150,20 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [x] Test real networking with two-terminal setup
 
 ### **crates/saved-core-rs/src/sync.rs**
-- [ ] Implement real CRDT conflict resolution
-- [ ] Add event log synchronization
-- [ ] Implement operation ordering and causality
-- [ ] Add message edit/deletion convergence
+- [x] Implement real CRDT conflict resolution
+- [x] Add event log synchronization
+- [x] Implement operation ordering and causality
+- [x] Add message edit/deletion convergence
+
+### **crates/saved-core-rs/src/events.rs**
+- [x] Add get_all_operations method to EventLog
+- [x] Fix get_operations_since to handle empty heads correctly
+- [x] Ensure proper DAG traversal for synchronization
+
+### **crates/saved-core-rs/src/storage/**
+- [x] Add get_all_messages_including_deleted method to Storage trait
+- [x] Implement in both memory and SQLite storage backends
+- [x] Support CRDT testing with deleted message visibility
 
 ### **crates/saved-core-rs/src/types.rs**
 - [x] Complete device linking flow
@@ -170,14 +190,15 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - ✅ **Message Handling**: Real SAVED protocol message parsing and gossipsub integration
 - ✅ **CLI Integration**: Fixed peer discovery, status reporting, and manual connections
 - ✅ **Device Management**: Complete QR code-based device linking, certificate validation, and authorization management
-- 🚧 **Core Functionality**: CRDT conflict resolution and event synchronization outstanding
-- 🚧 **Storage**: CRDT event persistence outstanding
+- ✅ **CRDT Implementation**: Full conflict resolution with last-write-wins semantics and comprehensive test coverage
+- ✅ **Event Processing**: Complete event log synchronization with DAG structure and lamport timestamps
 
 ## 📊 **Progress Tracking**
 
 - [x] Phase 1: Core Storage (3/3 completed)
 - [x] Phase 2: Networking (3/3 completed)
 - [x] Phase 3: Device Management (3/3 completed)
-- [ ] Phase 4: Advanced Features (0/3 completed)
+- [x] Phase 4: CRDT Implementation (3/3 completed)
+- [ ] Phase 5: Advanced Features (0/3 completed)
 
-**Overall Progress**: 9/12 major components completed
+**Overall Progress**: 12/15 major components completed

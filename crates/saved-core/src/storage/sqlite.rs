@@ -436,6 +436,41 @@ impl Storage for SqliteStorage {
         Ok(messages)
     }
 
+    async fn get_all_messages_including_deleted(&self) -> Result<Vec<Message>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT id, content, created_at, is_deleted, is_purged FROM messages ORDER BY created_at"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            let content: String = row.get(1)?;
+            let created_at: i64 = row.get(2)?;
+            let is_deleted: bool = row.get(3)?;
+            let is_purged: bool = row.get(4)?;
+
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&id_bytes[..32]);
+
+            Ok(Message {
+                id: MessageId(id),
+                content,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0)
+                    .unwrap_or_default()
+                    .with_timezone(&chrono::Utc),
+                is_deleted,
+                is_purged,
+            })
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+
+        Ok(messages)
+    }
+
     async fn get_message(&self, message_id: &MessageId) -> Result<Option<Message>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(

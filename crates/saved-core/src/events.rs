@@ -321,6 +321,11 @@ impl EventLog {
 
     /// Get operations since certain heads
     pub fn get_operations_since(&self, since_heads: &[OpHash]) -> Vec<&Op> {
+        // If no heads provided, return all operations
+        if since_heads.is_empty() {
+            return self.operations.values().collect();
+        }
+
         let mut visited = HashSet::new();
         let mut result = Vec::new();
 
@@ -373,6 +378,11 @@ impl EventLog {
         } else {
             false
         }
+    }
+
+    /// Get all operations in the event log
+    pub fn get_all_operations(&self) -> Vec<&Op> {
+        self.operations.values().collect()
     }
 }
 

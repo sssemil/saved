@@ -30,6 +30,9 @@ pub trait Storage: Send + Sync {
     /// Get all messages (materialized view)
     async fn get_all_messages(&self) -> Result<Vec<Message>>;
 
+    /// Get all messages including deleted ones (for testing)
+    async fn get_all_messages_including_deleted(&self) -> Result<Vec<Message>>;
+
     /// Get a specific message by ID
     async fn get_message(&self, message_id: &MessageId) -> Result<Option<Message>>;
 

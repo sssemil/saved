@@ -102,6 +102,12 @@ impl Storage for MemoryStorage {
             .collect())
     }
 
+    async fn get_all_messages_including_deleted(&self) -> Result<Vec<Message>> {
+        let messages = self.messages.read().await;
+        // Return all messages including deleted ones
+        Ok(messages.values().cloned().collect())
+    }
+
     async fn get_message(&self, message_id: &MessageId) -> Result<Option<Message>> {
         let messages = self.messages.read().await;
         Ok(messages.get(message_id).cloned())
