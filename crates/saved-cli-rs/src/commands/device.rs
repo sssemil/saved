@@ -205,8 +205,9 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
         account_passphrase: None,
     };
 
-    // Open account
-    let account = create_or_open_account(config).await?;
+    // Open account and start network
+    let mut account = create_or_open_account(config).await?;
+    account.start_network().await?;
 
     // Get device info
     let device_info = account.device_info().await;

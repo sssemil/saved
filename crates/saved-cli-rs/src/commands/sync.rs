@@ -77,8 +77,14 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
         account_passphrase: None,
     };
 
-    // Open account
-    let account = create_or_open_account(config).await?;
+    // Open account and start network
+    let mut account = create_or_open_account(config).await?;
+    account.start_network().await?;
+
+    // Perform a quick network scan to discover peers
+    let _ = account.scan_local_network().await;
+    // Give discovery some time to run
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Get device info
     let device_info = account.device_info().await;
@@ -159,8 +165,8 @@ pub async fn discover_command(account_path: &PathBuf, verbose: bool) -> Result<(
 
     // Optionally perform a manual local network scan to augment mDNS
     let _ = account.scan_local_network().await;
-    // Give discovery some time to run
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Give discovery some time to run and ensure network manager is ready
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let discovered = account.discovered_peers().await;
 
@@ -206,6 +212,11 @@ pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_a
 
     let mut account = create_or_open_account(config).await?;
     account.start_network().await?;
+
+    // Perform a quick network scan to discover peers
+    let _ = account.scan_local_network().await;
+    // Give discovery some time to run
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Determine addresses
     let addresses = if !override_addresses.is_empty() {
