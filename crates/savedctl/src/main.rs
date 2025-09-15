@@ -59,10 +59,20 @@ enum Commands {
         #[command(subcommand)]
         command: MessageCommands,
     },
+    /// Manage attachments
+    Attachment {
+        #[command(subcommand)]
+        command: AttachmentCommands,
+    },
     /// Manage network
     Network {
         #[command(subcommand)]
         command: NetworkCommands,
+    },
+    /// Manage account
+    Account {
+        #[command(subcommand)]
+        command: AccountCommands,
     },
 }
 
@@ -75,6 +85,18 @@ enum DeviceCommands {
         /// Device ID
         device_id: String,
     },
+    /// Generate QR code for device linking
+    Link,
+    /// Accept device link from QR code
+    Accept {
+        /// QR payload string
+        qr_payload: String,
+    },
+    /// Revoke device authorization
+    Revoke {
+        /// Device ID to revoke
+        device_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -85,6 +107,8 @@ enum PeerCommands {
     Connect {
         /// Peer device ID
         device_id: String,
+        /// Peer addresses (comma-separated)
+        addresses: Option<String>,
     },
     /// Disconnect from a peer
     Disconnect {
@@ -103,9 +127,23 @@ enum MessageCommands {
     Send {
         /// Message content
         content: String,
+        /// Attachment file paths (comma-separated)
+        attachments: Option<String>,
     },
-    /// Delete a message
+    /// Edit a message
+    Edit {
+        /// Message ID
+        message_id: String,
+        /// New message content
+        new_content: String,
+    },
+    /// Delete a message (soft delete)
     Delete {
+        /// Message ID
+        message_id: String,
+    },
+    /// Purge a message (hard delete)
+    Purge {
         /// Message ID
         message_id: String,
     },
@@ -121,6 +159,45 @@ enum NetworkCommands {
     Start,
     /// Stop network discovery
     Stop,
+    /// Scan local network for peers
+    Scan,
+}
+
+#[derive(Subcommand)]
+enum AttachmentCommands {
+    /// List all attachments
+    List,
+    /// Download an attachment
+    Download {
+        /// Attachment ID
+        attachment_id: i64,
+        /// Output file path
+        output_path: String,
+    },
+    /// Delete an attachment (soft delete)
+    Delete {
+        /// Attachment ID
+        attachment_id: i64,
+    },
+    /// Purge an attachment (hard delete)
+    Purge {
+        /// Attachment ID
+        attachment_id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountCommands {
+    /// Export account data
+    Export {
+        /// Output file path
+        output_path: String,
+    },
+    /// Import account data
+    Import {
+        /// Input file path
+        input_path: String,
+    },
 }
 
 #[tokio::main]
@@ -153,7 +230,9 @@ async fn main() -> Result<()> {
                 Commands::Device { command } => handle_device_via_daemon(&client, command).await?,
                 Commands::Peer { command } => handle_peer_via_daemon(&client, command).await?,
                 Commands::Message { command } => handle_message_via_daemon(&client, command).await?,
+                Commands::Attachment { command } => handle_attachment_via_daemon(&client, command).await?,
                 Commands::Network { command } => handle_network_via_daemon(&client, command).await?,
+                Commands::Account { command } => handle_account_via_daemon(&client, command).await?,
             }
             return Ok(());
         }
@@ -168,7 +247,9 @@ async fn main() -> Result<()> {
         Commands::Device { command } => handle_device(&account, command).await?,
         Commands::Peer { command } => handle_peer(&account, command).await?,
         Commands::Message { command } => handle_message(&mut account, command).await?,
+        Commands::Attachment { command } => handle_attachment(&account, command).await?,
         Commands::Network { command } => handle_network(&account, command).await?,
+        Commands::Account { command } => handle_account(&account, command).await?,
     }
     
     Ok(())
@@ -251,6 +332,18 @@ async fn handle_device(account: &AccountHandle, command: DeviceCommands) -> Resu
                 println!("Device not found: {}", device_id.red());
             }
         }
+        DeviceCommands::Link => {
+            println!("{}", "Device linking requires daemon to be running".yellow());
+            println!("Please start the daemon with: cargo run --bin saved-daemon");
+        }
+        DeviceCommands::Accept { qr_payload: _ } => {
+            println!("{}", "Device linking requires daemon to be running".yellow());
+            println!("Please start the daemon with: cargo run --bin saved-daemon");
+        }
+        DeviceCommands::Revoke { device_id: _ } => {
+            println!("{}", "Device revocation requires daemon to be running".yellow());
+            println!("Please start the daemon with: cargo run --bin saved-daemon");
+        }
     }
     Ok(())
 }
@@ -295,8 +388,11 @@ async fn handle_peer(account: &AccountHandle, command: PeerCommands) -> Result<(
                 println!("No peers found. Use 'savedctl peer scan' to discover peers.");
             }
         }
-        PeerCommands::Connect { device_id } => {
+        PeerCommands::Connect { device_id, addresses } => {
             println!("Connecting to peer: {}", device_id.bright_blue());
+            if let Some(addresses_str) = addresses {
+                println!("Using addresses: {}", addresses_str.bright_blue());
+            }
             // TODO: Implement peer connection
             println!("Peer connection not yet implemented.");
         }
@@ -332,15 +428,31 @@ async fn handle_message(account: &mut AccountHandle, command: MessageCommands) -
                 println!("  Created: {}", format!("{}", message.created_at.format("%Y-%m-%d %H:%M:%S UTC")).bright_blue());
             }
         }
-        MessageCommands::Send { content } => {
+        MessageCommands::Send { content, attachments } => {
             println!("Sending message: {}", content.bright_blue());
-            let message_id = account.create_message(content, Vec::new()).await?;
+            let attachment_paths: Vec<std::path::PathBuf> = attachments
+                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect::<Vec<String>>())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.into())
+                .collect();
+            let message_id = account.create_message(content, attachment_paths).await?;
             println!("Message sent with ID: {}", format!("{:?}", message_id).bright_green());
+        }
+        MessageCommands::Edit { message_id, new_content: _ } => {
+            println!("Editing message: {}", message_id.bright_blue());
+            // TODO: Implement message editing
+            println!("Message editing not yet implemented.");
         }
         MessageCommands::Delete { message_id } => {
             println!("Deleting message: {}", message_id.bright_blue());
             // TODO: Implement message deletion
             println!("Message deletion not yet implemented.");
+        }
+        MessageCommands::Purge { message_id } => {
+            println!("Purging message: {}", message_id.bright_blue());
+            // TODO: Implement message purging
+            println!("Message purging not yet implemented.");
         }
     }
     Ok(())
@@ -374,6 +486,11 @@ async fn handle_network(account: &AccountHandle, command: NetworkCommands) -> Re
             println!("Stopping network...");
             // TODO: Implement network stop
             println!("Network stop not yet implemented.");
+        }
+        NetworkCommands::Scan => {
+            println!("Scanning network...");
+            // TODO: Implement network scanning
+            println!("Network scanning not yet implemented.");
         }
     }
     Ok(())
@@ -482,6 +599,53 @@ async fn handle_device_via_daemon(client: &DaemonClient, command: DeviceCommands
                 }
             }
         }
+        DeviceCommands::Link => {
+            let response = client.send_request(DaemonRequest::DeviceLink).await?;
+            match response {
+                DaemonResponse::DeviceLink { qr_payload } => {
+                    println!("{}", "Device Linking QR Code".bright_blue().bold());
+                    println!("========================");
+                    println!("QR Payload: {}", qr_payload.bright_blue());
+                    println!("\nShare this QR code with the device you want to link.");
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        DeviceCommands::Accept { qr_payload } => {
+            let response = client.send_request(DaemonRequest::DeviceAccept { qr_payload: qr_payload.clone() }).await?;
+            match response {
+                DaemonResponse::DeviceAccepted { device_id, device_name } => {
+                    println!("Device link accepted successfully!");
+                    println!("  Device ID: {}", device_id.bright_blue());
+                    println!("  Device Name: {}", device_name.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        DeviceCommands::Revoke { device_id } => {
+            let response = client.send_request(DaemonRequest::DeviceRevoke { device_id: device_id.clone() }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Device {} revoked successfully.", device_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -528,8 +692,11 @@ async fn handle_peer_via_daemon(client: &DaemonClient, command: PeerCommands) ->
                 }
             }
         }
-        PeerCommands::Connect { device_id } => {
-            let response = client.send_request(DaemonRequest::PeerConnect { device_id: device_id.clone() }).await?;
+        PeerCommands::Connect { device_id, addresses } => {
+            let addresses_vec = addresses
+                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            let response = client.send_request(DaemonRequest::PeerConnect { device_id: device_id.clone(), addresses: addresses_vec }).await?;
             match response {
                 DaemonResponse::Success => {
                     println!("Connecting to peer: {}", device_id.bright_blue());
@@ -602,12 +769,29 @@ async fn handle_message_via_daemon(client: &DaemonClient, command: MessageComman
                 }
             }
         }
-        MessageCommands::Send { content } => {
-            let response = client.send_request(DaemonRequest::MessageSend { content: content.clone() }).await?;
+        MessageCommands::Send { content, attachments } => {
+            let attachments_vec = attachments
+                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            let response = client.send_request(DaemonRequest::MessageSend { content: content.clone(), attachments: attachments_vec }).await?;
             match response {
                 DaemonResponse::MessageSent { message_id } => {
                     println!("Sending message: {}", content.bright_blue());
                     println!("Message sent with ID: {}", message_id.bright_green());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        MessageCommands::Edit { message_id, new_content } => {
+            let response = client.send_request(DaemonRequest::MessageEdit { message_id: message_id.clone(), new_content: new_content.clone() }).await?;
+            match response {
+                DaemonResponse::MessageEdited { message_id } => {
+                    println!("Message {} edited successfully.", message_id.bright_blue());
                 }
                 DaemonResponse::Error(msg) => {
                     println!("{}", format!("Error: {}", msg).red());
@@ -622,6 +806,20 @@ async fn handle_message_via_daemon(client: &DaemonClient, command: MessageComman
             match response {
                 DaemonResponse::Success => {
                     println!("Deleting message: {}", message_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        MessageCommands::Purge { message_id } => {
+            let response = client.send_request(DaemonRequest::MessagePurge { message_id: message_id.clone() }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Purging message: {}", message_id.bright_blue());
                 }
                 DaemonResponse::Error(msg) => {
                     println!("{}", format!("Error: {}", msg).red());
@@ -701,6 +899,149 @@ async fn handle_network_via_daemon(client: &DaemonClient, command: NetworkComman
                 }
             }
         }
+        NetworkCommands::Scan => {
+            let response = client.send_request(DaemonRequest::NetworkScan).await?;
+            match response {
+                DaemonResponse::NetworkScanned { discovered_count } => {
+                    println!("Network scan completed. Found {} peers.", discovered_count.to_string().bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
     }
+    Ok(())
+}
+
+async fn handle_attachment_via_daemon(client: &DaemonClient, command: AttachmentCommands) -> Result<()> {
+    match command {
+        AttachmentCommands::List => {
+            let response = client.send_request(DaemonRequest::AttachmentList).await?;
+            match response {
+                DaemonResponse::AttachmentList(attachments) => {
+                    println!("{}", "Attachments".bright_blue().bold());
+                    println!("============");
+                    if attachments.is_empty() {
+                        println!("No attachments found.");
+                    } else {
+                        for attachment in attachments {
+                            println!("Attachment ID: {}", attachment.id.to_string().bright_blue());
+                            println!("  Message ID: {}", attachment.message_id.bright_blue());
+                            println!("  Filename: {}", attachment.filename.bright_blue());
+                            println!("  Size: {} bytes", attachment.size.to_string().bright_blue());
+                            if let Some(mime_type) = attachment.mime_type {
+                                println!("  MIME Type: {}", mime_type.bright_blue());
+                            }
+                            println!("  Status: {}", attachment.status.bright_blue());
+                            println!("  Created: {}", attachment.created_at.bright_blue());
+                            if let Some(last_accessed) = attachment.last_accessed {
+                                println!("  Last Accessed: {}", last_accessed.bright_blue());
+                            }
+                            println!();
+                        }
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        AttachmentCommands::Download { attachment_id, output_path } => {
+            let response = client.send_request(DaemonRequest::AttachmentDownload { attachment_id, output_path: output_path.clone() }).await?;
+            match response {
+                DaemonResponse::AttachmentDownloaded { attachment_id, output_path } => {
+                    println!("Downloaded attachment {} to {}", attachment_id.to_string().bright_blue(), output_path.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        AttachmentCommands::Delete { attachment_id } => {
+            let response = client.send_request(DaemonRequest::AttachmentDelete { attachment_id }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Deleted attachment {}", attachment_id.to_string().bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        AttachmentCommands::Purge { attachment_id } => {
+            let response = client.send_request(DaemonRequest::AttachmentPurge { attachment_id }).await?;
+            match response {
+                DaemonResponse::Success => {
+                    println!("Purged attachment {}", attachment_id.to_string().bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_account_via_daemon(client: &DaemonClient, command: AccountCommands) -> Result<()> {
+    match command {
+        AccountCommands::Export { output_path } => {
+            let response = client.send_request(DaemonRequest::AccountExport { output_path: output_path.clone() }).await?;
+            match response {
+                DaemonResponse::AccountExported { output_path } => {
+                    println!("Account exported to {}", output_path.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        AccountCommands::Import { input_path } => {
+            let response = client.send_request(DaemonRequest::AccountImport { input_path: input_path.clone() }).await?;
+            match response {
+                DaemonResponse::AccountImported { messages_imported } => {
+                    println!("Account imported from {}. {} messages imported.", input_path.bright_blue(), messages_imported.to_string().bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// Fallback handlers for direct database access when daemon is not running
+async fn handle_attachment(_account: &AccountHandle, _command: AttachmentCommands) -> Result<()> {
+    println!("{}", "Attachment management requires daemon to be running".yellow());
+    println!("Please start the daemon with: cargo run --bin saved-daemon");
+    Ok(())
+}
+
+async fn handle_account(_account: &AccountHandle, _command: AccountCommands) -> Result<()> {
+    println!("{}", "Account management requires daemon to be running".yellow());
+    println!("Please start the daemon with: cargo run --bin saved-daemon");
     Ok(())
 }

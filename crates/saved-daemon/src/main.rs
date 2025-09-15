@@ -117,26 +117,25 @@ async fn main() -> Result<()> {
         error!("Failed to save control port: {}", e);
     }
     
-    // Start control server in background
-    let mut server = DaemonServer::new(account, control_port);
-    let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.start().await {
-            error!("Control server error: {}", e);
-        }
-    });
+            // Start control server in background
+            let mut server = DaemonServer::new(account, control_port);
+            
+            // Run server in a separate task that doesn't require Send
+            let server_task = async {
+                if let Err(e) = server.start().await {
+                    error!("Control server error: {}", e);
+                }
+            };
     
-    // Wait for shutdown signal
-    match signal::ctrl_c().await {
-        Ok(()) => {
+    // Run server and wait for shutdown signal concurrently
+    tokio::select! {
+        _ = server_task => {
+            info!("Control server stopped");
+        }
+        _ = signal::ctrl_c() => {
             info!("Received shutdown signal, stopping daemon...");
         }
-        Err(err) => {
-            error!("Failed to listen for shutdown signal: {}", err);
-        }
     }
-    
-    // Shutdown server
-    server_handle.abort();
     
     // Cleanup control port file
     if let Err(e) = cleanup_control_port(&args.account_path) {

@@ -363,6 +363,114 @@ pub mod protocol {
     pub const LINKING_PROTOCOL: &str = "/savedmsgs/1/linking";
 }
 
+/// Main SAVED protocol message wrapper
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedMessage {
+    #[prost(oneof = "saved_message::MessageType", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    pub message_type: Option<saved_message::MessageType>,
+}
+
+/// SAVED message types
+pub mod saved_message {
+    use super::*;
+    
+    #[derive(Clone, PartialEq, Message)]
+    pub enum MessageType {
+        #[prost(message, tag = "1")]
+        AnnounceHeads(super::SavedAnnounceHeads),
+        #[prost(message, tag = "2")]
+        FetchOpsReq(super::SavedFetchOpsReq),
+        #[prost(message, tag = "3")]
+        FetchOpsResp(super::SavedFetchOpsResp),
+        #[prost(message, tag = "4")]
+        HaveChunksReq(super::SavedHaveChunksReq),
+        #[prost(message, tag = "5")]
+        HaveChunksResp(super::SavedHaveChunksResp),
+        #[prost(message, tag = "6")]
+        FetchChunksReq(super::SavedFetchChunksReq),
+        #[prost(message, tag = "7")]
+        FetchChunksResp(super::SavedFetchChunksResp),
+        #[prost(message, tag = "8")]
+        Ack(super::SavedAck),
+    }
+}
+
+/// Announce heads message for CRDT synchronization
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedAnnounceHeads {
+    /// Current head operation hashes
+    #[prost(bytes, repeated, tag = "1")]
+    pub heads: Vec<Vec<u8>>,
+    /// Peer ID of the sender
+    #[prost(string, tag = "2")]
+    pub peer_id: String,
+    /// Timestamp of the announcement
+    #[prost(int64, tag = "3")]
+    pub timestamp: i64,
+}
+
+/// Fetch operations request
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedFetchOpsReq {
+    /// Operation hashes to fetch
+    #[prost(bytes, repeated, tag = "1")]
+    pub ops: Vec<Vec<u8>>,
+    /// Maximum number of operations to return
+    #[prost(uint32, tag = "2")]
+    pub max_ops: u32,
+}
+
+/// Fetch operations response
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedFetchOpsResp {
+    /// Requested operations
+    #[prost(message, repeated, tag = "1")]
+    pub ops: Vec<OpHeader>,
+}
+
+/// Have chunks request
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedHaveChunksReq {
+    /// Chunk CIDs to check availability for
+    #[prost(bytes, repeated, tag = "1")]
+    pub chunks: Vec<Vec<u8>>,
+}
+
+/// Have chunks response
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedHaveChunksResp {
+    /// Availability bitmap (true = have, false = don't have)
+    #[prost(bool, repeated, tag = "1")]
+    pub available: Vec<bool>,
+}
+
+/// Fetch chunks request
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedFetchChunksReq {
+    /// Chunk CIDs to fetch
+    #[prost(bytes, repeated, tag = "1")]
+    pub chunks: Vec<Vec<u8>>,
+}
+
+/// Fetch chunks response
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedFetchChunksResp {
+    /// Chunk data (encrypted)
+    #[prost(bytes, repeated, tag = "1")]
+    pub chunks: Vec<Vec<u8>>,
+}
+
+/// Acknowledgment message
+#[derive(Clone, PartialEq, Message)]
+pub struct SavedAck {
+    /// Operations acknowledged up to
+    #[prost(bytes, repeated, tag = "1")]
+    pub up_to_op: Vec<Vec<u8>>,
+    /// Timestamp of acknowledgment
+    #[prost(uint64, tag = "2")]
+    pub timestamp: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
