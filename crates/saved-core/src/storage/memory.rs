@@ -6,11 +6,13 @@ use tokio::sync::RwLock;
 use super::trait_impl::{Storage, StorageStats, Attachment};
 use crate::error::{Error, Result};
 use crate::events::Op;
+use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
 
 /// In-memory storage implementation
 pub struct MemoryStorage {
     operations: Arc<RwLock<Vec<Op>>>,
+    encrypted_operations: Arc<RwLock<Vec<OpEnvelope>>>,
     messages: Arc<RwLock<HashMap<MessageId, Message>>>,
     chunks: Arc<RwLock<HashMap<[u8; 32], Vec<u8>>>>,
     account_key: Arc<RwLock<Option<Vec<u8>>>>,
@@ -28,6 +30,7 @@ impl MemoryStorage {
     pub fn new() -> Self {
         Self {
             operations: Arc::new(RwLock::new(Vec::new())),
+            encrypted_operations: Arc::new(RwLock::new(Vec::new())),
             messages: Arc::new(RwLock::new(HashMap::new())),
             chunks: Arc::new(RwLock::new(HashMap::new())),
             account_key: Arc::new(RwLock::new(None)),
@@ -62,8 +65,19 @@ impl Storage for MemoryStorage {
         Ok(())
     }
 
+    async fn store_encrypted_operation(&self, envelope: &OpEnvelope) -> Result<()> {
+        let mut ops = self.encrypted_operations.write().await;
+        ops.push(envelope.clone());
+        Ok(())
+    }
+
     async fn get_all_operations(&self) -> Result<Vec<Op>> {
         let ops = self.operations.read().await;
+        Ok(ops.clone())
+    }
+
+    async fn get_all_encrypted_operations(&self) -> Result<Vec<OpEnvelope>> {
+        let ops = self.encrypted_operations.read().await;
         Ok(ops.clone())
     }
 

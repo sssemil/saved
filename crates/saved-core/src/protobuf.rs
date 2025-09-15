@@ -4,7 +4,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 /// Operation header containing metadata and signature
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Message, serde::Serialize, serde::Deserialize)]
 pub struct OpHeader {
     /// 40 bytes: 32 pubkey hash + 8 counter
     #[prost(bytes, tag = "1")]

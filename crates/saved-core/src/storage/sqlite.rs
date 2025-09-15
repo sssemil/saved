@@ -7,6 +7,7 @@
 
 use crate::error::{Error, Result};
 use crate::events::Op;
+use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
 use async_trait::async_trait;
 use rusqlite::{params, Connection};
@@ -77,6 +78,16 @@ impl SqliteStorage {
                 parents BLOB NOT NULL,
                 operation_data BLOB NOT NULL,
                 timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        // Encrypted operations table
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS encrypted_operations (
+                op_id BLOB PRIMARY KEY,
+                header_data BLOB NOT NULL,
+                ciphertext BLOB NOT NULL
             )",
             [],
         )?;
@@ -262,6 +273,31 @@ impl Storage for SqliteStorage {
         Ok(())
     }
 
+    async fn store_encrypted_operation(&self, envelope: &OpEnvelope) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        
+        // Extract operation ID from header for indexing
+        let op_id = if let Some(header) = &envelope.header {
+            header.op_id.clone()
+        } else {
+            return Err(crate::error::Error::Sync("Missing operation header".to_string()));
+        };
+
+        db.execute(
+            "INSERT OR REPLACE INTO encrypted_operations (
+                op_id, header_data, ciphertext
+            ) VALUES (?, ?, ?)",
+            params![
+                op_id,
+                bincode::serialize(&envelope.header).map_err(|e| crate::error::Error::Sync(
+                    format!("Header serialization error: {}", e)
+                ))?,
+                envelope.ciphertext,
+            ],
+        )?;
+        Ok(())
+    }
+
     async fn get_all_operations(&self) -> Result<Vec<Op>> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
@@ -305,6 +341,37 @@ impl Storage for SqliteStorage {
                 timestamp: chrono::DateTime::from_timestamp(timestamp, 0)
                     .unwrap_or_default()
                     .with_timezone(&chrono::Utc),
+            })
+        })?;
+
+        let mut operations = Vec::new();
+        for row in rows {
+            operations.push(row?);
+        }
+
+        Ok(operations)
+    }
+
+    async fn get_all_encrypted_operations(&self) -> Result<Vec<OpEnvelope>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT header_data, ciphertext FROM encrypted_operations ORDER BY op_id"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let header_data: Vec<u8> = row.get(0)?;
+            let ciphertext: Vec<u8> = row.get(1)?;
+
+            let header: Option<crate::protobuf::OpHeader> = bincode::deserialize(&header_data)
+                .map_err(|e| rusqlite::Error::InvalidColumnType(
+                    0,
+                    format!("Header deserialization error: {}", e),
+                    rusqlite::types::Type::Blob,
+                ))?;
+
+            Ok(OpEnvelope {
+                header,
+                ciphertext,
             })
         })?;
 

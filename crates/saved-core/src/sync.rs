@@ -45,6 +45,11 @@ impl SyncManager {
         }
     }
 
+    /// Get the vault key for encryption
+    async fn get_vault_key(&self) -> Result<VaultKey> {
+        Ok(self.vault_key)
+    }
+
     /// Initialize from persisted storage (load operations into the event log)
     pub async fn initialize(&mut self) -> Result<()> {
         let ops = self.storage.get_all_operations().await?;
@@ -243,8 +248,12 @@ impl SyncManager {
         // Add to event log
         self.event_log.add_operation(op.clone())?;
 
-        // Store in database
-        self.storage.store_operation(&op).await?;
+        // Encrypt the operation for secure storage
+        let vault_key = self.get_vault_key().await?;
+        let encrypted_envelope = op.encrypt(&vault_key, &self.device_key)?;
+        
+        // Store encrypted operation in database
+        self.storage.store_encrypted_operation(&encrypted_envelope).await?;
 
         // Also create and store Message objects for testing
         match operation {

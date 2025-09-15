@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::events::Op;
+use crate::protobuf::OpEnvelope;
 use crate::types::{Message, MessageId};
 use async_trait::async_trait;
 
@@ -12,8 +13,14 @@ pub trait Storage: Send + Sync {
     /// Store an operation
     async fn store_operation(&self, operation: &Op) -> Result<()>;
 
+    /// Store an encrypted operation envelope
+    async fn store_encrypted_operation(&self, envelope: &OpEnvelope) -> Result<()>;
+
     /// Get all operations
     async fn get_all_operations(&self) -> Result<Vec<Op>>;
+
+    /// Get all encrypted operation envelopes
+    async fn get_all_encrypted_operations(&self) -> Result<Vec<OpEnvelope>>;
 
     /// Get operations for a specific device
     async fn get_device_operations(&self, device_id: &[u8; 32]) -> Result<Vec<Op>>;
