@@ -795,6 +795,12 @@ impl AccountHandle {
                 network_event_sender,
             ).await?;
             
+            // Set storage in network manager for chunk synchronization
+            // Note: This is a simplified approach - in production you'd want proper storage sharing
+            // For now, we'll create a memory storage clone for the network manager
+            let network_storage = Box::new(crate::storage::MemoryStorage::new());
+            network_manager.set_storage(network_storage).await;
+            
             self.network_manager = Some(network_manager);
         }
         

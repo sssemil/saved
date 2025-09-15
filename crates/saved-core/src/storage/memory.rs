@@ -275,7 +275,7 @@ impl Storage for MemoryStorage {
         })
     }
 
-    async fn store_attachment(&self, message_id: &crate::types::MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+    async fn store_attachment(&self, message_id: &crate::types::MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
         let mut atts = self.attachments.write().await;
         let mut att_chunks = self.attachment_chunks.write().await;
         let new_id = (atts.len() as i64) + 1;
@@ -284,7 +284,11 @@ impl Storage for MemoryStorage {
             message_id: *message_id,
             filename: filename.to_string(),
             size,
+            file_hash: *file_hash,
+            mime_type,
+            status: super::trait_impl::AttachmentStatus::Active,
             created_at: chrono::Utc::now(),
+            last_accessed: None,
         });
         att_chunks.insert(new_id, chunk_ids.clone());
         Ok(new_id)
@@ -298,6 +302,122 @@ impl Storage for MemoryStorage {
     async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>> {
         let att_chunks = self.attachment_chunks.read().await;
         Ok(att_chunks.get(&attachment_id).cloned().unwrap_or_default())
+    }
+
+    async fn get_all_attachments(&self) -> Result<Vec<Attachment>> {
+        let atts = self.attachments.read().await;
+        Ok(atts.values().cloned().collect())
+    }
+
+    async fn get_attachment_by_id(&self, attachment_id: i64) -> Result<Option<Attachment>> {
+        let atts = self.attachments.read().await;
+        Ok(atts.get(&attachment_id).cloned())
+    }
+
+    async fn get_attachments_by_file_hash(&self, file_hash: &[u8; 32]) -> Result<Vec<Attachment>> {
+        let atts = self.attachments.read().await;
+        Ok(atts.values().filter(|a| &a.file_hash == file_hash).cloned().collect())
+    }
+
+    async fn delete_attachment(&self, attachment_id: i64) -> Result<()> {
+        let mut atts = self.attachments.write().await;
+        if let Some(attachment) = atts.get_mut(&attachment_id) {
+            attachment.status = super::trait_impl::AttachmentStatus::Deleted;
+        }
+        Ok(())
+    }
+
+    async fn purge_attachment(&self, attachment_id: i64) -> Result<()> {
+        let mut atts = self.attachments.write().await;
+        let mut att_chunks = self.attachment_chunks.write().await;
+        
+        // Mark as purged
+        if let Some(attachment) = atts.get_mut(&attachment_id) {
+            attachment.status = super::trait_impl::AttachmentStatus::Purged;
+        }
+        
+        // Remove chunk mapping (chunks will be garbage collected separately)
+        att_chunks.remove(&attachment_id);
+        Ok(())
+    }
+
+    async fn update_attachment_access_time(&self, attachment_id: i64) -> Result<()> {
+        let mut atts = self.attachments.write().await;
+        if let Some(attachment) = atts.get_mut(&attachment_id) {
+            attachment.last_accessed = Some(chrono::Utc::now());
+        }
+        Ok(())
+    }
+
+    async fn get_attachment_stats(&self) -> Result<super::trait_impl::AttachmentStats> {
+        let atts = self.attachments.read().await;
+        let mut total_attachments = 0;
+        let mut active_attachments = 0;
+        let mut deleted_attachments = 0;
+        let mut purged_attachments = 0;
+        let mut total_size = 0u64;
+        let mut unique_files = std::collections::HashSet::new();
+
+        for attachment in atts.values() {
+            total_attachments += 1;
+            total_size += attachment.size;
+            unique_files.insert(attachment.file_hash);
+
+            match attachment.status {
+                super::trait_impl::AttachmentStatus::Active => active_attachments += 1,
+                super::trait_impl::AttachmentStatus::Deleted => deleted_attachments += 1,
+                super::trait_impl::AttachmentStatus::Purged => purged_attachments += 1,
+            }
+        }
+
+        Ok(super::trait_impl::AttachmentStats {
+            total_attachments,
+            active_attachments,
+            deleted_attachments,
+            purged_attachments,
+            total_size,
+            unique_files: unique_files.len(),
+        })
+    }
+
+    async fn garbage_collect_attachments(&self) -> Result<super::trait_impl::GarbageCollectionStats> {
+        let mut atts = self.attachments.write().await;
+        let mut att_chunks = self.attachment_chunks.write().await;
+        let mut chunks = self.chunks.write().await;
+        
+        let mut chunks_removed = 0;
+        let mut attachments_removed = 0;
+        let mut space_freed = 0u64;
+
+        // Find purged attachments and remove them
+        let purged_ids: Vec<i64> = atts.iter()
+            .filter(|(_, att)| att.status == super::trait_impl::AttachmentStatus::Purged)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for attachment_id in purged_ids {
+            if let Some(attachment) = atts.remove(&attachment_id) {
+                attachments_removed += 1;
+                space_freed += attachment.size;
+            }
+            
+            // Remove chunk mappings
+            if let Some(chunk_ids) = att_chunks.remove(&attachment_id) {
+                // Decrement reference counts for chunks
+                for chunk_id in chunk_ids {
+                    if let Some(chunk_data) = chunks.remove(&chunk_id) {
+                        chunks_removed += 1;
+                        space_freed += chunk_data.len() as u64;
+                    }
+                }
+            }
+        }
+
+        Ok(super::trait_impl::GarbageCollectionStats {
+            chunks_removed,
+            attachments_removed,
+            space_freed,
+        })
     }
 }
 

@@ -229,6 +229,108 @@ pub mod fetch_chunks_resp {
     }
 }
 
+/// Request attachment metadata from a peer
+#[derive(Clone, PartialEq, Message)]
+pub struct RequestAttachmentMetadataReq {
+    /// Message IDs to get attachment metadata for
+    #[prost(bytes, repeated, tag = "1")]
+    pub message_ids: Vec<Vec<u8>>,
+    /// Optional: specific attachment IDs to request
+    #[prost(int64, repeated, tag = "2")]
+    pub attachment_ids: Vec<i64>,
+}
+
+/// Response with attachment metadata
+#[derive(Clone, PartialEq, Message)]
+pub struct RequestAttachmentMetadataResp {
+    /// List of attachment metadata
+    #[prost(message, repeated, tag = "1")]
+    pub attachments: Vec<request_attachment_metadata_resp::AttachmentMetadata>,
+}
+
+pub mod request_attachment_metadata_resp {
+    use prost::Message;
+    
+    /// Attachment metadata for synchronization
+    #[derive(Clone, PartialEq, Message)]
+    pub struct AttachmentMetadata {
+        /// Attachment ID
+        #[prost(int64, tag = "1")]
+        pub id: i64,
+        /// Message ID this attachment belongs to
+        #[prost(bytes, tag = "2")]
+        pub message_id: Vec<u8>,
+        /// Filename
+        #[prost(string, tag = "3")]
+        pub filename: String,
+        /// File size in bytes
+        #[prost(uint64, tag = "4")]
+        pub size: u64,
+        /// BLAKE3 hash of entire file for deduplication
+        #[prost(bytes, tag = "5")]
+        pub file_hash: Vec<u8>,
+        /// MIME type
+        #[prost(string, optional, tag = "6")]
+        pub mime_type: Option<String>,
+        /// Attachment status (0=Active, 1=Deleted, 2=Purged)
+        #[prost(int32, tag = "7")]
+        pub status: i32,
+        /// Creation timestamp
+        #[prost(int64, tag = "8")]
+        pub created_at: i64,
+        /// Last accessed timestamp (optional)
+        #[prost(int64, optional, tag = "9")]
+        pub last_accessed: Option<i64>,
+        /// Chunk IDs for this attachment
+        #[prost(bytes, repeated, tag = "10")]
+        pub chunk_ids: Vec<Vec<u8>>,
+    }
+}
+
+/// Announce attachment metadata to peers
+#[derive(Clone, PartialEq, Message)]
+pub struct AnnounceAttachmentMetadata {
+    /// List of attachment metadata to announce
+    #[prost(message, repeated, tag = "1")]
+    pub attachments: Vec<announce_attachment_metadata::AttachmentMetadata>,
+}
+
+pub mod announce_attachment_metadata {
+    use prost::Message;
+    
+    /// Attachment metadata for announcement
+    #[derive(Clone, PartialEq, Message)]
+    pub struct AttachmentMetadata {
+        /// Attachment ID
+        #[prost(int64, tag = "1")]
+        pub id: i64,
+        /// Message ID this attachment belongs to
+        #[prost(bytes, tag = "2")]
+        pub message_id: Vec<u8>,
+        /// Filename
+        #[prost(string, tag = "3")]
+        pub filename: String,
+        /// File size in bytes
+        #[prost(uint64, tag = "4")]
+        pub size: u64,
+        /// BLAKE3 hash of entire file for deduplication
+        #[prost(bytes, tag = "5")]
+        pub file_hash: Vec<u8>,
+        /// MIME type
+        #[prost(string, optional, tag = "6")]
+        pub mime_type: Option<String>,
+        /// Attachment status (0=Active, 1=Deleted, 2=Purged)
+        #[prost(int32, tag = "7")]
+        pub status: i32,
+        /// Creation timestamp
+        #[prost(int64, tag = "8")]
+        pub created_at: i64,
+        /// Chunk IDs for this attachment (for availability checking)
+        #[prost(bytes, repeated, tag = "9")]
+        pub chunk_ids: Vec<Vec<u8>>,
+    }
+}
+
 /// Device linking onboarding token
 #[derive(Clone, PartialEq, Message, Serialize, Deserialize)]
 pub struct OnboardingToken {

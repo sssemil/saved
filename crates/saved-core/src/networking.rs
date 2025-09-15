@@ -225,6 +225,10 @@ pub struct NetworkManager {
     peer_stats_history: Arc<Mutex<HashMap<String, VecDeque<PeerStats>>>>,
     /// Peer groups
     peer_groups: Arc<Mutex<HashMap<PeerGroup, HashSet<String>>>>,
+    /// Storage backend for chunk management
+    storage: Arc<Mutex<Option<Box<dyn crate::storage::Storage + Send + Sync>>>>,
+    /// Chunk availability tracking per peer
+    peer_chunk_availability: Arc<Mutex<HashMap<String, HashSet<[u8; 32]>>>>,
 
     swarm: Arc<Mutex<Option<Swarm<net_behaviour::NetBehaviour>>>>,
 }
@@ -249,9 +253,17 @@ impl NetworkManager {
             health_check_interval: Duration::from_secs(60),
             peer_stats_history: Arc::new(Mutex::new(HashMap::new())),
             peer_groups: Arc::new(Mutex::new(HashMap::new())),
+            storage: Arc::new(Mutex::new(None)),
+            peer_chunk_availability: Arc::new(Mutex::new(HashMap::new())),
 
             swarm: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Set the storage backend for chunk management
+    pub async fn set_storage(&self, storage: Box<dyn crate::storage::Storage + Send + Sync>) {
+        let mut storage_ref = self.storage.lock().await;
+        *storage_ref = Some(storage);
     }
 
     fn build_identity_from_device_key(device_key: &crate::crypto::DeviceKey) -> identity::Keypair {
@@ -1447,20 +1459,33 @@ impl NetworkManager {
                     }
                     SavedMessageType::HaveChunksReq(req) => {
                         println!("Received chunk availability request: cids={}", req.cids.len());
-                        // TODO: Respond with chunk availability
+                        self.handle_have_chunks_request(peer_id, req).await;
                     }
                     SavedMessageType::HaveChunksResp(resp) => {
                         println!("Received chunk availability response: bitmap={} bytes", 
                                 resp.have_bitmap.len());
-                        // TODO: Process chunk availability and request missing chunks
+                        self.handle_have_chunks_response(peer_id, resp).await;
                     }
                     SavedMessageType::FetchChunksReq(req) => {
                         println!("Received chunk fetch request: cids={}", req.cids.len());
-                        // TODO: Respond with requested chunks
+                        self.handle_fetch_chunks_request(peer_id, req).await;
                     }
                     SavedMessageType::FetchChunksResp(resp) => {
                         println!("Received chunk fetch response: chunks={}", resp.chunks.len());
-                        // TODO: Process received chunks
+                        self.handle_fetch_chunks_response(peer_id, resp).await;
+                    }
+                    SavedMessageType::RequestAttachmentMetadataReq(req) => {
+                        println!("Received attachment metadata request: message_ids={}, attachment_ids={}", 
+                                req.message_ids.len(), req.attachment_ids.len());
+                        self.handle_request_attachment_metadata(peer_id, req).await;
+                    }
+                    SavedMessageType::RequestAttachmentMetadataResp(resp) => {
+                        println!("Received attachment metadata response: attachments={}", resp.attachments.len());
+                        self.handle_attachment_metadata_response(peer_id, resp).await;
+                    }
+                    SavedMessageType::AnnounceAttachmentMetadata(announce) => {
+                        println!("Received attachment metadata announcement: attachments={}", announce.attachments.len());
+                        self.handle_attachment_metadata_announcement(peer_id, announce).await;
                     }
                 }
             }
@@ -1502,6 +1527,18 @@ impl NetworkManager {
             return Ok(SavedMessageType::FetchChunksResp(resp));
         }
         
+        if let Ok(req) = RequestAttachmentMetadataReq::decode(data) {
+            return Ok(SavedMessageType::RequestAttachmentMetadataReq(req));
+        }
+        
+        if let Ok(resp) = RequestAttachmentMetadataResp::decode(data) {
+            return Ok(SavedMessageType::RequestAttachmentMetadataResp(resp));
+        }
+        
+        if let Ok(announce) = AnnounceAttachmentMetadata::decode(data) {
+            return Ok(SavedMessageType::AnnounceAttachmentMetadata(announce));
+        }
+        
         Err(Error::Network("Unknown SAVED message type".to_string()))
     }
 
@@ -1524,6 +1561,353 @@ impl NetworkManager {
         }
         Ok(())
     }
+
+    /// Handle incoming HaveChunks request
+    async fn handle_have_chunks_request(&mut self, _peer_id: PeerId, req: HaveChunksReq) {
+        let storage_ref = self.storage.lock().await;
+        if let Some(storage) = storage_ref.as_ref() {
+            // Create bitmap indicating which chunks we have
+            let mut bitmap = Vec::new();
+            let mut byte = 0u8;
+            let mut bit_pos = 0;
+
+            for (_i, cid_bytes) in req.cids.iter().enumerate() {
+                if cid_bytes.len() == 32 {
+                    let mut chunk_id = [0u8; 32];
+                    chunk_id.copy_from_slice(cid_bytes);
+                    
+                    let has_chunk = storage.has_chunk(&chunk_id).await.unwrap_or(false);
+                    if has_chunk {
+                        byte |= 1 << bit_pos;
+                    }
+                }
+
+                bit_pos += 1;
+                if bit_pos == 8 {
+                    bitmap.push(byte);
+                    byte = 0;
+                    bit_pos = 0;
+                }
+            }
+
+            // Add remaining bits
+            if bit_pos > 0 {
+                bitmap.push(byte);
+            }
+
+            // Send response
+            let resp = HaveChunksResp {
+                have_bitmap: bitmap,
+            };
+
+            let data = resp.encode_to_vec();
+            if !data.is_empty() {
+                drop(storage_ref);
+                let _ = self.send_gossipsub_message("/savedmsgs/chunks", data).await;
+            }
+        }
+    }
+
+    /// Handle incoming HaveChunks response
+    async fn handle_have_chunks_response(&self, peer_id: PeerId, resp: HaveChunksResp) {
+        let peer_id_str = peer_id.to_string();
+        let mut availability = self.peer_chunk_availability.lock().await;
+        let _peer_chunks = availability.entry(peer_id_str).or_insert_with(HashSet::new);
+
+        // Process bitmap to determine which chunks the peer has
+        let mut chunk_index = 0;
+        for byte in &resp.have_bitmap {
+            for bit_pos in 0..8 {
+                if (byte >> bit_pos) & 1 == 1 {
+                    // Peer has this chunk - we would need to track which chunk this refers to
+                    // For now, we'll implement a simplified version
+                    println!("Peer {} has chunk at index {}", peer_id, chunk_index);
+                }
+                chunk_index += 1;
+            }
+        }
+    }
+
+    /// Handle incoming FetchChunks request
+    async fn handle_fetch_chunks_request(&mut self, _peer_id: PeerId, req: FetchChunksReq) {
+        let storage_ref = self.storage.lock().await;
+        if let Some(storage) = storage_ref.as_ref() {
+            let mut chunks = Vec::new();
+
+            for cid_bytes in &req.cids {
+                if cid_bytes.len() == 32 {
+                    let mut chunk_id = [0u8; 32];
+                    chunk_id.copy_from_slice(cid_bytes);
+                    
+                    if let Ok(Some(chunk_data)) = storage.get_chunk(&chunk_id).await {
+                        chunks.push(fetch_chunks_resp::Chunk {
+                            cid: cid_bytes.clone(),
+                            data: chunk_data,
+                        });
+                    }
+                }
+            }
+
+            // Send response
+            let resp = FetchChunksResp {
+                chunks,
+            };
+
+            let data = resp.encode_to_vec();
+            if !data.is_empty() {
+                drop(storage_ref);
+                let _ = self.send_gossipsub_message("/savedmsgs/chunks", data).await;
+            }
+        }
+    }
+
+    /// Handle incoming FetchChunks response
+    async fn handle_fetch_chunks_response(&self, peer_id: PeerId, resp: FetchChunksResp) {
+        let storage_ref = self.storage.lock().await;
+        if let Some(storage) = storage_ref.as_ref() {
+            for chunk in &resp.chunks {
+                if chunk.cid.len() == 32 {
+                    let mut chunk_id = [0u8; 32];
+                    chunk_id.copy_from_slice(&chunk.cid);
+                    
+                    // Store the received chunk
+                    if let Err(e) = storage.store_chunk(&chunk_id, &chunk.data).await {
+                        println!("Failed to store chunk from peer {}: {}", peer_id, e);
+                    } else {
+                        println!("Stored chunk from peer {}: {} bytes", peer_id, chunk.data.len());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Request chunk availability from a peer
+    pub async fn request_chunk_availability(&mut self, _peer_id: &str, chunk_ids: Vec<[u8; 32]>) -> Result<()> {
+        let cids: Vec<Vec<u8>> = chunk_ids.iter().map(|id| id.to_vec()).collect();
+        let req = HaveChunksReq { cids };
+
+        let data = req.encode_to_vec();
+        if !data.is_empty() {
+            self.send_gossipsub_message("/savedmsgs/chunks", data).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Request chunks from a peer
+    pub async fn request_chunks(&mut self, _peer_id: &str, chunk_ids: Vec<[u8; 32]>) -> Result<()> {
+        let cids: Vec<Vec<u8>> = chunk_ids.iter().map(|id| id.to_vec()).collect();
+        let req = FetchChunksReq { cids };
+
+        let data = req.encode_to_vec();
+        if !data.is_empty() {
+            self.send_gossipsub_message("/savedmsgs/chunks", data).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get chunks that are missing locally
+    pub async fn get_missing_chunks(&self, chunk_ids: &[[u8; 32]]) -> Result<Vec<[u8; 32]>> {
+        let storage_ref = self.storage.lock().await;
+        if let Some(storage) = storage_ref.as_ref() {
+            let mut missing = Vec::new();
+            for chunk_id in chunk_ids {
+                if !storage.has_chunk(chunk_id).await.unwrap_or(false) {
+                    missing.push(*chunk_id);
+                }
+            }
+            Ok(missing)
+        } else {
+            Ok(chunk_ids.to_vec())
+        }
+    }
+
+    /// Sync chunks with connected peers
+    pub async fn sync_chunks_with_peers(&mut self, chunk_ids: Vec<[u8; 32]>) -> Result<()> {
+        let missing_chunks = self.get_missing_chunks(&chunk_ids).await?;
+        
+        if missing_chunks.is_empty() {
+            return Ok(());
+        }
+
+        // Get connected peers
+        let peers = self.connected_peers.lock().await;
+        let connected_peer_ids: Vec<String> = peers.iter()
+            .filter(|(_, peer_info)| peer_info.connection_state == ConnectionState::Connected)
+            .map(|(device_id, _)| device_id.clone())
+            .collect();
+        drop(peers);
+
+        if connected_peer_ids.is_empty() {
+            return Err(Error::Network("No connected peers available for chunk sync".to_string()));
+        }
+
+        // Request chunk availability from first connected peer
+        if let Some(peer_id) = connected_peer_ids.first() {
+            self.request_chunk_availability(peer_id, missing_chunks).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle incoming attachment metadata request
+    async fn handle_request_attachment_metadata(&mut self, _peer_id: PeerId, req: RequestAttachmentMetadataReq) {
+        let storage_ref = self.storage.lock().await;
+        if let Some(storage) = storage_ref.as_ref() {
+            let mut attachments = Vec::new();
+
+            // If specific attachment IDs are requested, get those
+            if !req.attachment_ids.is_empty() {
+                for attachment_id in &req.attachment_ids {
+                    if let Ok(Some(attachment)) = storage.get_attachment_by_id(*attachment_id).await {
+                        if let Ok(chunk_ids) = storage.get_attachment_chunks(*attachment_id).await {
+                            let attachment_metadata = request_attachment_metadata_resp::AttachmentMetadata {
+                                id: attachment.id,
+                                message_id: attachment.message_id.0.to_vec(),
+                                filename: attachment.filename,
+                                size: attachment.size,
+                                file_hash: attachment.file_hash.to_vec(),
+                                mime_type: attachment.mime_type,
+                                status: match attachment.status {
+                                    crate::storage::trait_impl::AttachmentStatus::Active => 0,
+                                    crate::storage::trait_impl::AttachmentStatus::Deleted => 1,
+                                    crate::storage::trait_impl::AttachmentStatus::Purged => 2,
+                                },
+                                created_at: attachment.created_at.timestamp(),
+                                last_accessed: attachment.last_accessed.map(|t| t.timestamp()),
+                                chunk_ids: chunk_ids.iter().map(|id| id.to_vec()).collect(),
+                            };
+                            attachments.push(attachment_metadata);
+                        }
+                    }
+                }
+            } else {
+                // Get attachments for requested message IDs
+                for message_id_bytes in &req.message_ids {
+                    if message_id_bytes.len() == 32 {
+                        let mut message_id = [0u8; 32];
+                        message_id.copy_from_slice(message_id_bytes);
+                        let message_id_obj = crate::types::MessageId(message_id);
+                        
+                        if let Ok(message_attachments) = storage.get_attachments_for_message(&message_id_obj).await {
+                            for attachment in message_attachments {
+                                if let Ok(chunk_ids) = storage.get_attachment_chunks(attachment.id).await {
+                                    let attachment_metadata = request_attachment_metadata_resp::AttachmentMetadata {
+                                        id: attachment.id,
+                                        message_id: attachment.message_id.0.to_vec(),
+                                        filename: attachment.filename,
+                                        size: attachment.size,
+                                        file_hash: attachment.file_hash.to_vec(),
+                                        mime_type: attachment.mime_type,
+                                        status: match attachment.status {
+                                            crate::storage::trait_impl::AttachmentStatus::Active => 0,
+                                            crate::storage::trait_impl::AttachmentStatus::Deleted => 1,
+                                            crate::storage::trait_impl::AttachmentStatus::Purged => 2,
+                                        },
+                                        created_at: attachment.created_at.timestamp(),
+                                        last_accessed: attachment.last_accessed.map(|t| t.timestamp()),
+                                        chunk_ids: chunk_ids.iter().map(|id| id.to_vec()).collect(),
+                                    };
+                                    attachments.push(attachment_metadata);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Send response
+            let resp = RequestAttachmentMetadataResp { attachments };
+            let data = resp.encode_to_vec();
+            if !data.is_empty() {
+                drop(storage_ref);
+                let _ = self.send_gossipsub_message("/savedmsgs/attachments", data).await;
+            }
+        }
+    }
+
+    /// Handle incoming attachment metadata response
+    async fn handle_attachment_metadata_response(&self, _peer_id: PeerId, resp: RequestAttachmentMetadataResp) {
+        println!("Received attachment metadata for {} attachments", resp.attachments.len());
+        
+        // In a real implementation, this would:
+        // 1. Check if we have the chunks for each attachment
+        // 2. Request missing chunks from the peer
+        // 3. Store the attachment metadata locally
+        // 4. Trigger progressive download if needed
+        
+        for attachment in &resp.attachments {
+            println!("Attachment: {} ({} bytes, {} chunks)", 
+                    attachment.filename, attachment.size, attachment.chunk_ids.len());
+        }
+    }
+
+    /// Handle incoming attachment metadata announcement
+    async fn handle_attachment_metadata_announcement(&self, _peer_id: PeerId, announce: AnnounceAttachmentMetadata) {
+        println!("Received attachment metadata announcement for {} attachments", announce.attachments.len());
+        
+        // In a real implementation, this would:
+        // 1. Check if we need any of these attachments
+        // 2. Request attachment metadata for interesting attachments
+        // 3. Update our knowledge of what peers have
+        
+        for attachment in &announce.attachments {
+            println!("Announced attachment: {} ({} bytes, {} chunks)", 
+                    attachment.filename, attachment.size, attachment.chunk_ids.len());
+        }
+    }
+
+    /// Request attachment metadata from a peer
+    pub async fn request_attachment_metadata(&mut self, _peer_id: &str, message_ids: Vec<[u8; 32]>, attachment_ids: Vec<i64>) -> Result<()> {
+        let message_id_bytes: Vec<Vec<u8>> = message_ids.iter().map(|id| id.to_vec()).collect();
+        let req = RequestAttachmentMetadataReq { 
+            message_ids: message_id_bytes,
+            attachment_ids,
+        };
+
+        let data = req.encode_to_vec();
+        if !data.is_empty() {
+            self.send_gossipsub_message("/savedmsgs/attachments", data).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Announce attachment metadata to peers
+    pub async fn announce_attachment_metadata(&mut self, attachments: Vec<crate::storage::trait_impl::Attachment>) -> Result<()> {
+        let mut announcement_attachments = Vec::new();
+        
+        for attachment in attachments {
+            let announcement_attachment = announce_attachment_metadata::AttachmentMetadata {
+                id: attachment.id,
+                message_id: attachment.message_id.0.to_vec(),
+                filename: attachment.filename,
+                size: attachment.size,
+                file_hash: attachment.file_hash.to_vec(),
+                mime_type: attachment.mime_type,
+                status: match attachment.status {
+                    crate::storage::trait_impl::AttachmentStatus::Active => 0,
+                    crate::storage::trait_impl::AttachmentStatus::Deleted => 1,
+                    crate::storage::trait_impl::AttachmentStatus::Purged => 2,
+                },
+                created_at: attachment.created_at.timestamp(),
+                chunk_ids: Vec::new(), // We'll populate this if needed
+            };
+            announcement_attachments.push(announcement_attachment);
+        }
+
+        let announce = AnnounceAttachmentMetadata {
+            attachments: announcement_attachments,
+        };
+
+        let data = announce.encode_to_vec();
+        if !data.is_empty() {
+            self.send_gossipsub_message("/savedmsgs/attachments", data).await?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Enum for different SAVED message types
@@ -1536,6 +1920,9 @@ pub enum SavedMessageType {
     HaveChunksResp(HaveChunksResp),
     FetchChunksReq(FetchChunksReq),
     FetchChunksResp(FetchChunksResp),
+    RequestAttachmentMetadataReq(RequestAttachmentMetadataReq),
+    RequestAttachmentMetadataResp(RequestAttachmentMetadataResp),
+    AnnounceAttachmentMetadata(AnnounceAttachmentMetadata),
 }
 
 #[cfg(test)]

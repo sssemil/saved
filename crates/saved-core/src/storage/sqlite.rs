@@ -109,7 +109,11 @@ impl SqliteStorage {
                 message_id BLOB NOT NULL,
                 filename TEXT NOT NULL,
                 size INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
+                file_hash BLOB NOT NULL,
+                mime_type TEXT,
+                status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_accessed INTEGER
             )",
             [],
         )?;
@@ -825,12 +829,20 @@ impl Storage for SqliteStorage {
         })
     }
 
-    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
+    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64> {
         let db = self.db.lock().unwrap();
         let created_at = chrono::Utc::now().timestamp();
         db.execute(
-            "INSERT INTO attachments (message_id, filename, size, created_at) VALUES (?, ?, ?, ?)",
-            params![message_id.0.as_slice(), filename, size as i64, created_at],
+            "INSERT INTO attachments (message_id, filename, size, file_hash, mime_type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                message_id.0.as_slice(), 
+                filename, 
+                size as i64, 
+                file_hash.as_slice(),
+                mime_type,
+                0i64, // Active status
+                created_at
+            ],
         )?;
 
         let attachment_id: i64 = db.last_insert_rowid();
@@ -847,21 +859,41 @@ impl Storage for SqliteStorage {
 
     async fn get_attachments_for_message(&self, message_id: &MessageId) -> Result<Vec<Attachment>> {
         let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT id, message_id, filename, size, created_at FROM attachments WHERE message_id = ? ORDER BY created_at")?;
+        let mut stmt = db.prepare("SELECT id, message_id, filename, size, file_hash, mime_type, status, created_at, last_accessed FROM attachments WHERE message_id = ? ORDER BY created_at")?;
         let rows = stmt.query_map(params![message_id.0.as_slice()], |row| {
             let id: i64 = row.get(0)?;
             let msg_id_bytes: Vec<u8> = row.get(1)?;
             let filename: String = row.get(2)?;
             let size: i64 = row.get(3)?;
-            let created_at: i64 = row.get(4)?;
+            let file_hash_bytes: Vec<u8> = row.get(4)?;
+            let mime_type: Option<String> = row.get(5)?;
+            let status: i64 = row.get(6)?;
+            let created_at: i64 = row.get(7)?;
+            let last_accessed: Option<i64> = row.get(8)?;
+            
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&msg_id_bytes[..32]);
+            
+            let mut file_hash = [0u8; 32];
+            file_hash.copy_from_slice(&file_hash_bytes[..32]);
+            
+            let status = match status {
+                0 => super::trait_impl::AttachmentStatus::Active,
+                1 => super::trait_impl::AttachmentStatus::Deleted,
+                2 => super::trait_impl::AttachmentStatus::Purged,
+                _ => super::trait_impl::AttachmentStatus::Active,
+            };
+            
             Ok(Attachment {
                 id,
                 message_id: MessageId(id_bytes),
                 filename,
                 size: size as u64,
+                file_hash,
+                mime_type,
+                status,
                 created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
             })
         })?;
 
@@ -882,6 +914,276 @@ impl Storage for SqliteStorage {
         let mut chunk_ids = Vec::new();
         for row in rows { chunk_ids.push(row?); }
         Ok(chunk_ids)
+    }
+
+    async fn get_all_attachments(&self) -> Result<Vec<Attachment>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT id, message_id, filename, size, file_hash, mime_type, status, created_at, last_accessed FROM attachments ORDER BY created_at")?;
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let msg_id_bytes: Vec<u8> = row.get(1)?;
+            let filename: String = row.get(2)?;
+            let size: i64 = row.get(3)?;
+            let file_hash_bytes: Vec<u8> = row.get(4)?;
+            let mime_type: Option<String> = row.get(5)?;
+            let status: i64 = row.get(6)?;
+            let created_at: i64 = row.get(7)?;
+            let last_accessed: Option<i64> = row.get(8)?;
+            
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&msg_id_bytes[..32]);
+            
+            let mut file_hash = [0u8; 32];
+            file_hash.copy_from_slice(&file_hash_bytes[..32]);
+            
+            let status = match status {
+                0 => super::trait_impl::AttachmentStatus::Active,
+                1 => super::trait_impl::AttachmentStatus::Deleted,
+                2 => super::trait_impl::AttachmentStatus::Purged,
+                _ => super::trait_impl::AttachmentStatus::Active,
+            };
+            
+            Ok(Attachment {
+                id,
+                message_id: MessageId(id_bytes),
+                filename,
+                size: size as u64,
+                file_hash,
+                mime_type,
+                status,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+            })
+        })?;
+
+        let mut attachments = Vec::new();
+        for row in rows { attachments.push(row?); }
+        Ok(attachments)
+    }
+
+    async fn get_attachment_by_id(&self, attachment_id: i64) -> Result<Option<Attachment>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT id, message_id, filename, size, file_hash, mime_type, status, created_at, last_accessed FROM attachments WHERE id = ?")?;
+        let mut rows = stmt.query_map(params![attachment_id], |row| {
+            let id: i64 = row.get(0)?;
+            let msg_id_bytes: Vec<u8> = row.get(1)?;
+            let filename: String = row.get(2)?;
+            let size: i64 = row.get(3)?;
+            let file_hash_bytes: Vec<u8> = row.get(4)?;
+            let mime_type: Option<String> = row.get(5)?;
+            let status: i64 = row.get(6)?;
+            let created_at: i64 = row.get(7)?;
+            let last_accessed: Option<i64> = row.get(8)?;
+            
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&msg_id_bytes[..32]);
+            
+            let mut file_hash = [0u8; 32];
+            file_hash.copy_from_slice(&file_hash_bytes[..32]);
+            
+            let status = match status {
+                0 => super::trait_impl::AttachmentStatus::Active,
+                1 => super::trait_impl::AttachmentStatus::Deleted,
+                2 => super::trait_impl::AttachmentStatus::Purged,
+                _ => super::trait_impl::AttachmentStatus::Active,
+            };
+            
+            Ok(Attachment {
+                id,
+                message_id: MessageId(id_bytes),
+                filename,
+                size: size as u64,
+                file_hash,
+                mime_type,
+                status,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+            })
+        })?;
+
+        if let Some(row) = rows.next() {
+            Ok(Some(row?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get_attachments_by_file_hash(&self, file_hash: &[u8; 32]) -> Result<Vec<Attachment>> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare("SELECT id, message_id, filename, size, file_hash, mime_type, status, created_at, last_accessed FROM attachments WHERE file_hash = ? ORDER BY created_at")?;
+        let rows = stmt.query_map(params![file_hash.as_slice()], |row| {
+            let id: i64 = row.get(0)?;
+            let msg_id_bytes: Vec<u8> = row.get(1)?;
+            let filename: String = row.get(2)?;
+            let size: i64 = row.get(3)?;
+            let file_hash_bytes: Vec<u8> = row.get(4)?;
+            let mime_type: Option<String> = row.get(5)?;
+            let status: i64 = row.get(6)?;
+            let created_at: i64 = row.get(7)?;
+            let last_accessed: Option<i64> = row.get(8)?;
+            
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&msg_id_bytes[..32]);
+            
+            let mut file_hash = [0u8; 32];
+            file_hash.copy_from_slice(&file_hash_bytes[..32]);
+            
+            let status = match status {
+                0 => super::trait_impl::AttachmentStatus::Active,
+                1 => super::trait_impl::AttachmentStatus::Deleted,
+                2 => super::trait_impl::AttachmentStatus::Purged,
+                _ => super::trait_impl::AttachmentStatus::Active,
+            };
+            
+            Ok(Attachment {
+                id,
+                message_id: MessageId(id_bytes),
+                filename,
+                size: size as u64,
+                file_hash,
+                mime_type,
+                status,
+                created_at: chrono::DateTime::from_timestamp(created_at, 0).unwrap_or_default().with_timezone(&chrono::Utc),
+                last_accessed: last_accessed.map(|ts| chrono::DateTime::from_timestamp(ts, 0).unwrap_or_default().with_timezone(&chrono::Utc)),
+            })
+        })?;
+
+        let mut attachments = Vec::new();
+        for row in rows { attachments.push(row?); }
+        Ok(attachments)
+    }
+
+    async fn delete_attachment(&self, attachment_id: i64) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE attachments SET status = 1 WHERE id = ?",
+            params![attachment_id],
+        )?;
+        Ok(())
+    }
+
+    async fn purge_attachment(&self, attachment_id: i64) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE attachments SET status = 2 WHERE id = ?",
+            params![attachment_id],
+        )?;
+        // Remove chunk mappings
+        db.execute(
+            "DELETE FROM attachment_chunks WHERE attachment_id = ?",
+            params![attachment_id],
+        )?;
+        Ok(())
+    }
+
+    async fn update_attachment_access_time(&self, attachment_id: i64) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        db.execute(
+            "UPDATE attachments SET last_accessed = ? WHERE id = ?",
+            params![now, attachment_id],
+        )?;
+        Ok(())
+    }
+
+    async fn get_attachment_stats(&self) -> Result<super::trait_impl::AttachmentStats> {
+        let db = self.db.lock().unwrap();
+        
+        // Count total attachments
+        let mut stmt = db.prepare("SELECT COUNT(*) FROM attachments")?;
+        let total_attachments: usize = stmt.query_row([], |row| row.get(0))?;
+        
+        // Count by status
+        let mut stmt = db.prepare("SELECT status, COUNT(*) FROM attachments GROUP BY status")?;
+        let rows = stmt.query_map([], |row| {
+            let status: i64 = row.get(0)?;
+            let count: usize = row.get(1)?;
+            Ok((status, count))
+        })?;
+        
+        let mut active_attachments = 0;
+        let mut deleted_attachments = 0;
+        let mut purged_attachments = 0;
+        
+        for row in rows {
+            let (status, count) = row?;
+            match status {
+                0 => active_attachments = count,
+                1 => deleted_attachments = count,
+                2 => purged_attachments = count,
+                _ => {}
+            }
+        }
+        
+        // Calculate total size
+        let mut stmt = db.prepare("SELECT SUM(size) FROM attachments")?;
+        let total_size: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+        
+        // Count unique files
+        let mut stmt = db.prepare("SELECT COUNT(DISTINCT file_hash) FROM attachments")?;
+        let unique_files: usize = stmt.query_row([], |row| row.get(0))?;
+        
+        Ok(super::trait_impl::AttachmentStats {
+            total_attachments,
+            active_attachments,
+            deleted_attachments,
+            purged_attachments,
+            total_size: total_size as u64,
+            unique_files,
+        })
+    }
+
+    async fn garbage_collect_attachments(&self) -> Result<super::trait_impl::GarbageCollectionStats> {
+        let db = self.db.lock().unwrap();
+        
+        // Get purged attachments and their chunks
+        let mut stmt = db.prepare("SELECT a.id, a.size, ac.chunk_id FROM attachments a LEFT JOIN attachment_chunks ac ON a.id = ac.attachment_id WHERE a.status = 2")?;
+        let rows = stmt.query_map([], |row| {
+            let attachment_id: i64 = row.get(0)?;
+            let size: i64 = row.get(1)?;
+            let chunk_id: Option<Vec<u8>> = row.get(2)?;
+            Ok((attachment_id, size, chunk_id))
+        })?;
+        
+        let mut chunks_to_remove = Vec::new();
+        let mut attachments_removed = 0;
+        let mut space_freed = 0u64;
+        
+        for row in rows {
+            let (attachment_id, size, chunk_id) = row?;
+            attachments_removed += 1;
+            space_freed += size as u64;
+            
+            if let Some(chunk_id_bytes) = chunk_id {
+                if chunk_id_bytes.len() == 32 {
+                    let mut chunk_id_array = [0u8; 32];
+                    chunk_id_array.copy_from_slice(&chunk_id_bytes);
+                    chunks_to_remove.push(chunk_id_array);
+                }
+            }
+        }
+        
+        // Remove purged attachments
+        db.execute("DELETE FROM attachments WHERE status = 2", [])?;
+        
+        // Remove chunks (they will be garbage collected by the chunk system)
+        let mut chunks_removed = 0;
+        for chunk_id in chunks_to_remove {
+            let chunk_path = self.chunks_path.join(hex::encode(chunk_id));
+            if chunk_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&chunk_path) {
+                    space_freed += metadata.len();
+                }
+                let _ = std::fs::remove_file(&chunk_path);
+                chunks_removed += 1;
+            }
+        }
+        
+        Ok(super::trait_impl::GarbageCollectionStats {
+            chunks_removed,
+            attachments_removed,
+            space_freed,
+        })
     }
 }
 

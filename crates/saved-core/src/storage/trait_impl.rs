@@ -94,13 +94,37 @@ pub trait Storage: Send + Sync {
     async fn get_stats(&self) -> Result<StorageStats>;
 
     /// Store attachment metadata and its chunk mapping
-    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, chunk_ids: &Vec<[u8; 32]>) -> Result<i64>;
+    async fn store_attachment(&self, message_id: &MessageId, filename: &str, size: u64, file_hash: &[u8; 32], mime_type: Option<String>, chunk_ids: &Vec<[u8; 32]>) -> Result<i64>;
 
     /// Get attachments for a message
     async fn get_attachments_for_message(&self, message_id: &MessageId) -> Result<Vec<Attachment>>;
 
     /// Get chunk ids for an attachment
     async fn get_attachment_chunks(&self, attachment_id: i64) -> Result<Vec<[u8; 32]>>;
+
+    /// Get all attachments (including deleted ones for testing)
+    async fn get_all_attachments(&self) -> Result<Vec<Attachment>>;
+
+    /// Get attachment by ID
+    async fn get_attachment_by_id(&self, attachment_id: i64) -> Result<Option<Attachment>>;
+
+    /// Get attachments by file hash (for deduplication)
+    async fn get_attachments_by_file_hash(&self, file_hash: &[u8; 32]) -> Result<Vec<Attachment>>;
+
+    /// Delete an attachment (soft delete)
+    async fn delete_attachment(&self, attachment_id: i64) -> Result<()>;
+
+    /// Purge an attachment (hard delete)
+    async fn purge_attachment(&self, attachment_id: i64) -> Result<()>;
+
+    /// Update attachment access time
+    async fn update_attachment_access_time(&self, attachment_id: i64) -> Result<()>;
+
+    /// Get attachment statistics
+    async fn get_attachment_stats(&self) -> Result<AttachmentStats>;
+
+    /// Garbage collect orphaned chunks and attachments
+    async fn garbage_collect_attachments(&self) -> Result<GarbageCollectionStats>;
 }
 
 /// Storage statistics
@@ -112,6 +136,25 @@ pub struct StorageStats {
     pub total_size: u64,
 }
 
+/// Attachment statistics
+#[derive(Debug, Clone)]
+pub struct AttachmentStats {
+    pub total_attachments: usize,
+    pub active_attachments: usize,
+    pub deleted_attachments: usize,
+    pub purged_attachments: usize,
+    pub total_size: u64,
+    pub unique_files: usize, // Files with unique hashes (deduplication count)
+}
+
+/// Garbage collection statistics
+#[derive(Debug, Clone)]
+pub struct GarbageCollectionStats {
+    pub chunks_removed: usize,
+    pub attachments_removed: usize,
+    pub space_freed: u64,
+}
+
 /// Attachment metadata
 #[derive(Debug, Clone)]
 pub struct Attachment {
@@ -119,5 +162,17 @@ pub struct Attachment {
     pub message_id: MessageId,
     pub filename: String,
     pub size: u64,
+    pub file_hash: [u8; 32], // BLAKE3 hash of entire file for deduplication
+    pub mime_type: Option<String>, // MIME type detection
+    pub status: AttachmentStatus, // Active, deleted, purged
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_accessed: Option<chrono::DateTime<chrono::Utc>>, // For access tracking
+}
+
+/// Attachment status for lifecycle management
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttachmentStatus {
+    Active,   // Normal attachment
+    Deleted,  // Soft deleted
+    Purged,   // Hard deleted, chunks may be garbage collected
 }

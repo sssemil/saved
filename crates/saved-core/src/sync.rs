@@ -67,12 +67,19 @@ impl SyncManager {
         // Process attachments
         let mut attachment_cids = Vec::new();
         for attachment_path in attachments {
+            let file_data = tokio::fs::read(&attachment_path).await?;
+            let file_hash = blake3_hash(&file_data);
+            
             let chunk_cids = self.process_attachment(&attachment_path).await?;
-            attachment_cids.extend(chunk_cids);
+            attachment_cids.extend(&chunk_cids);
+            
+            // Detect MIME type
+            let mime_type = self.detect_mime_type(&attachment_path, &file_data);
+            
             // Store attachment metadata
             let filename = attachment_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            let size = tokio::fs::metadata(&attachment_path).await.map(|m| m.len()).unwrap_or(0);
-            let _ = self.storage.store_attachment(&msg_id, filename, size, &attachment_cids).await;
+            let size = file_data.len() as u64;
+            let _ = self.storage.store_attachment(&msg_id, filename, size, &file_hash, mime_type, &chunk_cids).await;
         }
 
         // Create operation
@@ -125,12 +132,30 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Process an attachment file
+    /// Process an attachment file with deduplication
     async fn process_attachment(&mut self, path: &PathBuf) -> Result<Vec<ChunkId>> {
         let file_data = tokio::fs::read(path).await?;
+        
+        // Compute file hash for deduplication
+        let file_hash = blake3_hash(&file_data);
+        
+        // Check if file already exists (deduplication)
+        let existing_attachments = self.storage.get_attachments_by_file_hash(&file_hash).await?;
+        if !existing_attachments.is_empty() {
+            // File already exists, get its chunks
+            let existing_attachment = &existing_attachments[0];
+            let existing_chunks = self.storage.get_attachment_chunks(existing_attachment.id).await?;
+            
+            // Increment reference counts for existing chunks
+            for chunk_id in &existing_chunks {
+                self.storage.store_chunk(chunk_id, &[]).await?; // This increments ref count
+            }
+            
+            return Ok(existing_chunks);
+        }
+        
+        // New file, process normally
         let mut chunk_cids = Vec::new();
-
-        // Chunk the file (2 MiB chunks)
         const CHUNK_SIZE: usize = 2 * 1024 * 1024;
         let mut offset = 0;
 
@@ -141,21 +166,61 @@ impl SyncManager {
             // Compute chunk ID (BLAKE3 hash of plaintext)
             let chunk_id = blake3_hash(chunk_data);
 
-            // Encrypt chunk with convergent encryption
-            let chunk_key = crate::crypto::derive_chunk_key(&self.vault_key, &chunk_id)?;
-            let nonce = crate::crypto::generate_nonce();
-            let encrypted_chunk = crate::crypto::encrypt(&chunk_key, &nonce, chunk_data)?;
+            // Check if chunk already exists
+            if !self.storage.has_chunk(&chunk_id).await? {
+                // Encrypt chunk with convergent encryption
+                let chunk_key = crate::crypto::derive_chunk_key(&self.vault_key, &chunk_id)?;
+                let nonce = crate::crypto::generate_nonce();
+                let encrypted_chunk = crate::crypto::encrypt(&chunk_key, &nonce, chunk_data)?;
 
-            // Store chunk
-            self.storage
-                .store_chunk(&chunk_id, &encrypted_chunk)
-                .await?;
+                // Store chunk with nonce prepended
+                let mut chunk_with_nonce = Vec::new();
+                chunk_with_nonce.extend_from_slice(&nonce);
+                chunk_with_nonce.extend_from_slice(&encrypted_chunk);
+                self.storage.store_chunk(&chunk_id, &chunk_with_nonce).await?;
+            } else {
+                // Chunk exists, just increment reference count
+                self.storage.store_chunk(&chunk_id, &[]).await?;
+            }
 
             chunk_cids.push(chunk_id);
             offset = end;
         }
 
         Ok(chunk_cids)
+    }
+
+    /// Detect MIME type from file extension and content
+    fn detect_mime_type(&self, path: &PathBuf, _data: &[u8]) -> Option<String> {
+        // Simple MIME type detection based on file extension
+        // In a production system, you might want to use a library like `infer` for content-based detection
+        if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+            match extension.to_lowercase().as_str() {
+                "txt" => Some("text/plain".to_string()),
+                "md" => Some("text/markdown".to_string()),
+                "html" | "htm" => Some("text/html".to_string()),
+                "css" => Some("text/css".to_string()),
+                "js" => Some("application/javascript".to_string()),
+                "json" => Some("application/json".to_string()),
+                "xml" => Some("application/xml".to_string()),
+                "pdf" => Some("application/pdf".to_string()),
+                "zip" => Some("application/zip".to_string()),
+                "tar" => Some("application/x-tar".to_string()),
+                "gz" => Some("application/gzip".to_string()),
+                "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+                "png" => Some("image/png".to_string()),
+                "gif" => Some("image/gif".to_string()),
+                "svg" => Some("image/svg+xml".to_string()),
+                "mp3" => Some("audio/mpeg".to_string()),
+                "wav" => Some("audio/wav".to_string()),
+                "mp4" => Some("video/mp4".to_string()),
+                "avi" => Some("video/x-msvideo".to_string()),
+                "mov" => Some("video/quicktime".to_string()),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 
     /// Add an operation to the event log
@@ -515,6 +580,170 @@ impl SyncManager {
     pub fn has_operations_up_to(&self, up_to: &OpId) -> bool {
         self.event_log.has_operations_up_to(up_to)
     }
+
+    /// Download missing chunks for an attachment on-demand
+    pub async fn download_attachment_chunks(&mut self, attachment_id: i64, network_manager: Option<&mut crate::networking::NetworkManager>) -> Result<()> {
+        // Get attachment metadata
+        let attachment = match self.storage.get_attachment_by_id(attachment_id).await? {
+            Some(att) => att,
+            None => return Err(crate::error::Error::MessageNotFound),
+        };
+
+        // Get chunk IDs for this attachment
+        let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
+        
+        // Check which chunks we're missing
+        let mut missing_chunks = Vec::new();
+        for chunk_id in &chunk_ids {
+            if !self.storage.has_chunk(chunk_id).await? {
+                missing_chunks.push(*chunk_id);
+            }
+        }
+
+        if missing_chunks.is_empty() {
+            return Ok(()); // All chunks are already available
+        }
+
+        println!("Missing {} chunks for attachment '{}', requesting from peers...", 
+                missing_chunks.len(), attachment.filename);
+
+        // If we have a network manager, try to download missing chunks
+        if let Some(network_manager) = network_manager {
+            // Request chunk availability from peers
+            if let Err(e) = network_manager.request_chunk_availability("", missing_chunks.clone()).await {
+                println!("Failed to request chunk availability: {}", e);
+                return Err(e);
+            }
+
+            // Request the actual chunks
+            if let Err(e) = network_manager.request_chunks("", missing_chunks).await {
+                println!("Failed to request chunks: {}", e);
+                return Err(e);
+            }
+        } else {
+            return Err(crate::error::Error::Network("No network manager available for chunk download".to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Reconstruct a file from its chunks
+    pub async fn reconstruct_attachment_file(&self, attachment_id: i64) -> Result<Vec<u8>> {
+        // Get attachment metadata
+        let attachment = match self.storage.get_attachment_by_id(attachment_id).await? {
+            Some(att) => att,
+            None => return Err(crate::error::Error::MessageNotFound),
+        };
+
+        // Get chunk IDs for this attachment
+        let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
+        
+        // Reconstruct file from chunks
+        let mut file_data = Vec::new();
+        for chunk_id in &chunk_ids {
+            // Check if we have this chunk
+            if !self.storage.has_chunk(chunk_id).await? {
+                return Err(crate::error::Error::Storage(format!("Chunk {} not found", hex::encode(chunk_id))));
+            }
+
+            // Get the encrypted chunk data
+            let encrypted_chunk = match self.storage.get_chunk(chunk_id).await? {
+                Some(data) => data,
+                None => return Err(crate::error::Error::Storage(format!("Chunk {} data not found", hex::encode(chunk_id)))),
+            };
+
+            // Decrypt the chunk
+            let chunk_key = crate::crypto::derive_chunk_key(&self.vault_key, chunk_id)?;
+            let nonce_slice = &encrypted_chunk[0..24]; // First 24 bytes are nonce
+            let mut nonce = [0u8; 24];
+            nonce.copy_from_slice(nonce_slice);
+            let ciphertext = &encrypted_chunk[24..];
+            let decrypted_chunk = crate::crypto::decrypt(&chunk_key, &nonce, ciphertext)?;
+
+            // Append to file data
+            file_data.extend_from_slice(&decrypted_chunk);
+        }
+
+        // Verify file hash matches
+        let computed_hash = blake3_hash(&file_data);
+        if computed_hash != attachment.file_hash {
+            return Err(crate::error::Error::Crypto("File hash verification failed".to_string()));
+        }
+
+        // Update access time
+        self.storage.update_attachment_access_time(attachment_id).await?;
+
+        Ok(file_data)
+    }
+
+    /// Check if an attachment is fully available (all chunks present)
+    pub async fn is_attachment_available(&self, attachment_id: i64) -> Result<bool> {
+        let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
+        
+        for chunk_id in &chunk_ids {
+            if !self.storage.has_chunk(chunk_id).await? {
+                return Ok(false);
+            }
+        }
+        
+        Ok(true)
+    }
+
+    /// Get attachment availability status
+    pub async fn get_attachment_availability(&self, attachment_id: i64) -> Result<AttachmentAvailability> {
+        let attachment = match self.storage.get_attachment_by_id(attachment_id).await? {
+            Some(att) => att,
+            None => return Err(crate::error::Error::MessageNotFound),
+        };
+
+        let chunk_ids = self.storage.get_attachment_chunks(attachment_id).await?;
+        let mut available_chunks = 0;
+        let mut missing_chunks = Vec::new();
+
+        for chunk_id in &chunk_ids {
+            if self.storage.has_chunk(chunk_id).await? {
+                available_chunks += 1;
+            } else {
+                missing_chunks.push(*chunk_id);
+            }
+        }
+
+        let total_chunks = chunk_ids.len();
+        let is_fully_available = missing_chunks.is_empty();
+
+        Ok(AttachmentAvailability {
+            attachment_id,
+            filename: attachment.filename,
+            total_size: attachment.size,
+            total_chunks,
+            available_chunks,
+            missing_chunks,
+            is_fully_available,
+            progress_percentage: if total_chunks > 0 { (available_chunks as f64 / total_chunks as f64) * 100.0 } else { 0.0 },
+        })
+    }
+
+}
+
+/// Attachment availability information
+#[derive(Debug, Clone)]
+pub struct AttachmentAvailability {
+    /// Attachment ID
+    pub attachment_id: i64,
+    /// Filename
+    pub filename: String,
+    /// Total file size in bytes
+    pub total_size: u64,
+    /// Total number of chunks
+    pub total_chunks: usize,
+    /// Number of available chunks
+    pub available_chunks: usize,
+    /// List of missing chunk IDs
+    pub missing_chunks: Vec<[u8; 32]>,
+    /// Whether the attachment is fully available
+    pub is_fully_available: bool,
+    /// Download progress percentage (0.0 to 100.0)
+    pub progress_percentage: f64,
 }
 
 /// Resolved state of a message after CRDT conflict resolution
@@ -926,5 +1155,219 @@ mod tests {
         let result = sync_manager.apply_operation(invalid_op).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Missing parent operation"));
+    }
+
+    #[tokio::test]
+    async fn test_file_deduplication() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create a test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        // Process the same file twice
+        let chunk_cids1 = sync_manager.process_attachment(&file_path).await.unwrap();
+        let chunk_cids2 = sync_manager.process_attachment(&file_path).await.unwrap();
+
+        // Should return the same chunk IDs (deduplication)
+        assert_eq!(chunk_cids1, chunk_cids2);
+        assert_eq!(chunk_cids1.len(), 1); // Small file should be one chunk
+
+        // Check that chunks are properly stored
+        for chunk_id in &chunk_cids1 {
+            assert!(sync_manager.storage.has_chunk(chunk_id).await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_attachment_metadata_management() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create a test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        // Create message with attachment
+        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+
+        // Get attachments for the message
+        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        assert_eq!(attachments.len(), 1);
+
+        let attachment = &attachments[0];
+        assert_eq!(attachment.filename, "test.txt");
+        assert_eq!(attachment.size, 13); // "Hello, World!" length
+        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Active);
+        assert!(attachment.mime_type.is_some());
+        assert_eq!(attachment.mime_type.as_ref().unwrap(), "text/plain");
+
+        // Test attachment statistics
+        let stats = sync_manager.storage.get_attachment_stats().await.unwrap();
+        assert_eq!(stats.total_attachments, 1);
+        assert_eq!(stats.active_attachments, 1);
+        assert_eq!(stats.unique_files, 1);
+        assert_eq!(stats.total_size, 13);
+    }
+
+    #[tokio::test]
+    async fn test_attachment_lifecycle() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create a test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        // Create message with attachment
+        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+
+        // Get attachment ID
+        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachment_id = attachments[0].id;
+
+        // Test soft delete
+        sync_manager.storage.delete_attachment(attachment_id).await.unwrap();
+        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Deleted);
+
+        // Test purge
+        sync_manager.storage.purge_attachment(attachment_id).await.unwrap();
+        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        assert_eq!(attachment.status, crate::storage::trait_impl::AttachmentStatus::Purged);
+
+        // Test garbage collection
+        let gc_stats = sync_manager.storage.garbage_collect_attachments().await.unwrap();
+        assert_eq!(gc_stats.attachments_removed, 1);
+        assert!(gc_stats.space_freed > 0);
+    }
+
+    #[tokio::test]
+    async fn test_attachment_access_tracking() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create a test file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        // Create message with attachment
+        let msg_id = sync_manager.create_message("Test message".to_string(), vec![file_path]).await.unwrap();
+
+        // Get attachment ID
+        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        let attachment_id = attachments[0].id;
+
+        // Initially no access time
+        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        assert!(attachment.last_accessed.is_none());
+
+        // Update access time
+        sync_manager.storage.update_attachment_access_time(attachment_id).await.unwrap();
+
+        // Check access time was updated
+        let attachment = sync_manager.storage.get_attachment_by_id(attachment_id).await.unwrap().unwrap();
+        assert!(attachment.last_accessed.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_attachment_file_hash_deduplication() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create two files with identical content
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file1_path = temp_dir.path().join("file1.txt");
+        let file2_path = temp_dir.path().join("file2.txt");
+        std::fs::write(&file1_path, "Identical content").unwrap();
+        std::fs::write(&file2_path, "Identical content").unwrap();
+
+        // Create two messages with identical files
+        let msg1_id = sync_manager.create_message("Message 1".to_string(), vec![file1_path]).await.unwrap();
+        let msg2_id = sync_manager.create_message("Message 2".to_string(), vec![file2_path]).await.unwrap();
+
+        // Get attachments
+        let attachments1 = sync_manager.storage.get_attachments_for_message(&msg1_id).await.unwrap();
+        let attachments2 = sync_manager.storage.get_attachments_for_message(&msg2_id).await.unwrap();
+
+        // Both should have the same file hash
+        assert_eq!(attachments1[0].file_hash, attachments2[0].file_hash);
+
+        // Test finding attachments by file hash
+        let same_hash_attachments = sync_manager.storage.get_attachments_by_file_hash(&attachments1[0].file_hash).await.unwrap();
+        assert_eq!(same_hash_attachments.len(), 2);
+
+        // Test statistics show deduplication
+        let stats = sync_manager.storage.get_attachment_stats().await.unwrap();
+        assert_eq!(stats.total_attachments, 2);
+        assert_eq!(stats.unique_files, 1); // Only one unique file
+    }
+
+    #[tokio::test]
+    async fn test_progressive_download_functionality() {
+        let storage = Box::new(crate::storage::MemoryStorage::new());
+        let vault_key = crate::crypto::generate_vault_key();
+        let device_key = crate::crypto::DeviceKey::generate();
+        let mut sync_manager = SyncManager::new(storage, PathBuf::from("/tmp"), vault_key, device_key);
+        sync_manager.initialize().await.unwrap();
+
+        // Create a message with a file attachment
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test_progressive.txt");
+        let content = b"This is a test file for progressive download functionality. It should be chunked and then reconstructed.";
+        tokio::fs::write(&file_path, content).await.unwrap();
+
+        let msg_id = sync_manager.create_message(
+            "Message with file for progressive download".to_string(),
+            vec![file_path.clone()],
+        ).await.unwrap();
+
+        // Get the attachment
+        let attachments = sync_manager.storage.get_attachments_for_message(&msg_id).await.unwrap();
+        assert_eq!(attachments.len(), 1);
+        let attachment = &attachments[0];
+
+        // Check if attachment is available (should be since we just created it)
+        let is_available = sync_manager.is_attachment_available(attachment.id).await.unwrap();
+        assert!(is_available);
+
+        // Get attachment availability status
+        let availability = sync_manager.get_attachment_availability(attachment.id).await.unwrap();
+        assert_eq!(availability.attachment_id, attachment.id);
+        assert_eq!(availability.filename, "test_progressive.txt");
+        assert_eq!(availability.total_size, content.len() as u64);
+        assert!(availability.is_fully_available);
+        assert_eq!(availability.progress_percentage, 100.0);
+        assert_eq!(availability.missing_chunks.len(), 0);
+
+        // Reconstruct the file
+        let reconstructed_data = sync_manager.reconstruct_attachment_file(attachment.id).await.unwrap();
+        assert_eq!(reconstructed_data, content);
+
+        // Verify file hash matches
+        let computed_hash = blake3_hash(&reconstructed_data);
+        assert_eq!(computed_hash, attachment.file_hash);
+
+        println!("Progressive download functionality test passed!");
     }
 }
