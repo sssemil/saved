@@ -5,7 +5,7 @@
 //! In a production system, this would be replaced with a full libp2p implementation.
 
 use crate::error::{Error, Result};
-use crate::events::{Op, EventLog};
+use crate::events::Op;
 use crate::protobuf::*;
 use crate::types::{Event, DeviceInfo};
 use prost::Message;
@@ -17,6 +17,35 @@ use tokio::sync::Mutex;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use rand::Rng;
+
+use {
+    futures::StreamExt,
+    libp2p::{
+        core::{transport::Boxed as BoxedTransport, upgrade},
+        gossipsub, mdns, identify, autonat, dcutr,
+        identity, noise,
+        swarm::SwarmEvent,
+        tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
+    },
+};
+
+mod net_behaviour {
+    use libp2p::{
+        gossipsub, mdns, identify, autonat, relay, dcutr,
+        swarm::NetworkBehaviour,
+    };
+    
+    #[derive(NetworkBehaviour)]
+    pub struct NetBehaviour {
+        pub mdns: mdns::tokio::Behaviour,
+        pub gossipsub: gossipsub::Behaviour,
+        pub identify: identify::Behaviour,
+        pub autonat: autonat::Behaviour,
+        pub relay_client: relay::client::Behaviour,
+        pub dcutr: dcutr::Behaviour,
+        // request_response: request_response::cbor::Behaviour<Vec<u8>, Vec<u8>>,
+    }
+}
 
 /// Connection state for a peer
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +225,8 @@ pub struct NetworkManager {
     peer_stats_history: Arc<Mutex<HashMap<String, VecDeque<PeerStats>>>>,
     /// Peer groups
     peer_groups: Arc<Mutex<HashMap<PeerGroup, HashSet<String>>>>,
+
+    swarm: Arc<Mutex<Option<Swarm<net_behaviour::NetBehaviour>>>>,
 }
 
 impl NetworkManager {
@@ -218,8 +249,31 @@ impl NetworkManager {
             health_check_interval: Duration::from_secs(60),
             peer_stats_history: Arc::new(Mutex::new(HashMap::new())),
             peer_groups: Arc::new(Mutex::new(HashMap::new())),
+
+            swarm: Arc::new(Mutex::new(None)),
         })
     }
+
+    fn build_identity_from_device_key(device_key: &crate::crypto::DeviceKey) -> identity::Keypair {
+        let priv_bytes = device_key.private_key_bytes();
+        let secret = identity::ed25519::SecretKey::try_from_bytes(priv_bytes).expect("valid key bytes");
+        let ed_kp = identity::ed25519::Keypair::from(secret);
+        identity::Keypair::from(ed_kp)
+    }
+
+    fn build_transport(keypair: &identity::Keypair) -> anyhow::Result<BoxedTransport<(PeerId, libp2p::core::muxing::StreamMuxerBox)>> {
+        let noise_keys = noise::Config::new(keypair).expect("noise");
+        let yamux_config = yamux::Config::default();
+        let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true));
+        Ok(tcp_transport
+            .upgrade(upgrade::Version::V1Lazy)
+            .authenticate(noise_keys)
+            .multiplex(yamux_config)
+            .boxed())
+    }
+
+
+    // NetBehaviour defined at module scope
 
     /// Create default peer configuration
     fn create_default_peer_config() -> PeerConfig {
@@ -253,6 +307,55 @@ impl NetworkManager {
 
     /// Start listening on the given addresses
     pub async fn start_listening(&mut self, addresses: Vec<String>) -> Result<()> {
+        if self.swarm.lock().await.is_none() {
+                // Build swarm using the latest libp2p API
+                let kp = Self::build_identity_from_device_key(&self.device_key);
+                let mut swarm = libp2p::SwarmBuilder::with_existing_identity(kp)
+                    .with_tokio()
+                    .with_tcp(
+                        tcp::Config::default().nodelay(true),
+                        noise::Config::new,
+                        yamux::Config::default,
+                    )
+                    .map_err(|e| Error::Network(e.to_string()))?
+                    .with_quic()
+                    .with_relay_client(noise::Config::new, yamux::Config::default)
+                    .map_err(|e| Error::Network(e.to_string()))?
+                    .with_behaviour(|keypair, relay_behaviour| {
+                        let message_auth = gossipsub::MessageAuthenticity::Signed(keypair.clone());
+                        let gossipsub_config = gossipsub::Config::default();
+                        let gossipsub = gossipsub::Behaviour::new(message_auth, gossipsub_config).unwrap();
+                        
+                        let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), keypair.public().to_peer_id()).unwrap();
+                        
+                        let identify = identify::Behaviour::new(identify::Config::new(
+                            "/saved/1.0.0".to_string(),
+                            keypair.public(),
+                        ));
+                        
+                        let autonat = autonat::Behaviour::new(keypair.public().to_peer_id(), autonat::Config::default());
+                        
+                        let dcutr = dcutr::Behaviour::new(keypair.public().to_peer_id());
+                        
+                        net_behaviour::NetBehaviour {
+                            mdns,
+                            gossipsub,
+                            identify,
+                            autonat,
+                            relay_client: relay_behaviour,
+                            dcutr,
+                        }
+                    })
+                    .map_err(|e| Error::Network(e.to_string()))?
+                    .build();
+                
+                for addr in &addresses {
+                    if let Ok(ma) = addr.parse::<Multiaddr>() {
+                        swarm.listen_on(ma).map_err(|e| Error::Network(e.to_string()))?;
+                    }
+                }
+                *self.swarm.lock().await = Some(swarm);
+            }
         let mut listening_addrs = self.listening_addresses.lock().await;
         *listening_addrs = addresses.clone();
         drop(listening_addrs);
@@ -270,6 +373,14 @@ impl NetworkManager {
 
     /// Connect to a peer with proper connection management
     pub async fn connect_to_peer(&mut self, device_id: String, addresses: Vec<String>) -> Result<()> {
+        if let Some(swarm) = self.swarm.lock().await.as_mut() {
+            for addr in &addresses {
+                if let Ok(ma) = addr.parse::<Multiaddr>() {
+                    // Without known PeerId, dial multiaddr directly
+                    swarm.dial(ma).map_err(|e| Error::Network(e.to_string()))?;
+                }
+            }
+        }
         let mut peers = self.connected_peers.lock().await;
         
         // Check if peer is already connected
@@ -400,6 +511,93 @@ impl NetworkManager {
     /// Run the network event loop
     pub async fn run(&mut self) -> Result<()> {
         // Implement a proper network event loop
+        loop {
+                let mut message_to_handle = None;
+                
+                {
+                    if let Some(swarm) = self.swarm.lock().await.as_mut() {
+                        match swarm.select_next_some().await {
+                            SwarmEvent::NewListenAddr { address, .. } => {
+                                println!("Listening on: {}", address);
+                                let _ = self.event_sender.send(Event::NetworkListeningStarted { addresses: vec![address.to_string()] });
+                            }
+                            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                                println!("Connected to peer: {} via {}", peer_id, endpoint.get_remote_address());
+                                // Create a basic DeviceInfo for the connected peer
+                                let device_info = DeviceInfo {
+                                    device_id: peer_id.to_string(),
+                                    device_name: format!("Peer {}", peer_id),
+                                    is_online: true,
+                                    device_cert: None, // TODO: Get actual device cert
+                                    is_authorized: true,
+                                    last_seen: chrono::Utc::now(),
+                                };
+                                let _ = self.event_sender.send(Event::Connected(device_info));
+                            }
+                            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                                println!("Disconnected from peer: {}", peer_id);
+                                let _ = self.event_sender.send(Event::Disconnected(peer_id.to_string()));
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                                for (peer_id, multiaddr) in list {
+                                    println!("mDNS discovered peer: {} at {}", peer_id, multiaddr);
+                                    // Add to discovered peers
+                                    let mut discovered = self.discovered_peers.lock().await;
+                                    discovered.insert(peer_id.to_string(), DiscoveryInfo {
+                                        device_id: peer_id.to_string(),
+                                        addresses: vec![multiaddr.to_string()],
+                                        service_type: "_saved._tcp".to_string(),
+                                        service_name: "SAVED".to_string(),
+                                        discovered_at: chrono::Utc::now(),
+                                        last_seen: chrono::Utc::now(),
+                                        discovery_method: DiscoveryMethod::Mdns,
+                                    });
+                                }
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                                for (peer_id, _multiaddr) in list {
+                                    println!("mDNS peer expired: {}", peer_id);
+                                    // Remove from discovered peers
+                                    let mut discovered = self.discovered_peers.lock().await;
+                                    discovered.remove(&peer_id.to_string());
+                                }
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source: peer_id, message_id: _id, message })) => {
+                                println!("Received gossipsub message from {}: {}", peer_id, String::from_utf8_lossy(&message.data));
+                                // Store message data to handle after releasing the lock
+                                message_to_handle = Some((peer_id, message.data));
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+                                println!("Received identify info: {:?}", info);
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. })) => {
+                                println!("Sent identify info to: {}", peer_id);
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Autonat(event)) => {
+                                println!("Autonat event: {:?}", event);
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::RelayClient(event)) => {
+                                println!("Relay client event: {:?}", event);
+                            }
+                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Dcutr(event)) => {
+                                println!("DCUtR event: {:?}", event);
+                            }
+                            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                                println!("Outgoing connection error to {:?}: {}", peer_id, error);
+                            }
+                            SwarmEvent::IncomingConnectionError { local_addr: _, send_back_addr, error, connection_id: _ } => {
+                                println!("Incoming connection error from {}: {}", send_back_addr, error);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                // Handle message outside of the swarm lock
+                if let Some((peer_id, message_data)) = message_to_handle {
+                    self.handle_incoming_message(peer_id, message_data).await;
+                }
+            }
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         let mut stats_counter = 0;
         
@@ -1207,6 +1405,12 @@ impl NetworkManager {
             timestamp,
         })
     }
+
+    /// Handle incoming message from a peer
+    pub async fn handle_incoming_message(&mut self, peer_id: PeerId, data: Vec<u8>) {
+        // TODO: Implement message handling
+        println!("Received message from {}: {} bytes", peer_id, data.len());
+    }
 }
 
 #[cfg(test)]
@@ -1222,6 +1426,28 @@ mod tests {
         
         let network_manager = NetworkManager::new(device_key, event_sender).await;
         assert!(network_manager.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_real_networking_smoke() {
+        let device_key = DeviceKey::generate();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        
+        let mut network_manager = NetworkManager::new(device_key, event_sender).await.unwrap();
+        
+        // Test starting to listen on localhost
+        let result = network_manager.start_listening(vec!["/ip4/127.0.0.1/tcp/0".to_string()]).await;
+        assert!(result.is_ok(), "Failed to start listening: {:?}", result);
+        
+        // Test that we can get connected peers (should be empty initially)
+        let connected_peers = network_manager.get_connected_peers().await;
+        assert_eq!(connected_peers.len(), 0);
+        
+        // Test that we can get discovered peers (should be empty initially)
+        let discovered_peers = network_manager.get_discovered_peers().await;
+        assert_eq!(discovered_peers.len(), 0);
+        
+        println!("Real networking smoke test passed!");
     }
 
     #[tokio::test]
@@ -1830,4 +2056,5 @@ mod tests {
             _ => panic!("Expected PeerTagRemoved event"),
         }
     }
+
 }

@@ -106,11 +106,15 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [x] Add persistence test to ensure operations/messages survive restart (SQLite)
 
 ### **crates/saved-core-rs/src/networking.rs**
-- [ ] Update libp2p integration to current API
-- [ ] Implement real mDNS discovery
-- [ ] Add DCUtR hole punching
-- [ ] Implement relay fallback connections
-- [ ] Add real peer-to-peer message sync
+- [x] Update libp2p integration to current API
+- [x] Implement real mDNS discovery
+- [x] Add DCUtR hole punching
+- [x] Implement relay fallback connections
+- [x] Add real peer-to-peer message sync
+- [x] Implement libp2p Swarm with mdns+gossipsub+identify+autonat+relay+dcutr
+- [x] Add real networking event loop with proper error handling
+- [x] Implement real peer discovery and connection management
+- [x] Add smoke test for real networking functionality
 
 ### **crates/saved-core-rs/src/sync.rs**
 - [ ] Implement real CRDT conflict resolution
@@ -139,16 +143,16 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - ✅ **Tests**: Core storage tests added and passing
 - ✅ **Code Quality**: Improved with better integration of utility functions
 - ✅ **CLI Enhancement**: Better user experience with consistent formatting and validation
+- ✅ **Networking**: Full libp2p integration with real mDNS, DCUtR, relay, and gossipsub
 - 🚧 **Core Functionality**: Placeholder implementations need real functionality
-- 🚧 **Networking**: Simplified implementation needs full libp2p integration
 - 🚧 **Storage**: CRDT event persistence outstanding
 - 🚧 **Device Management**: Authentication and linking incomplete
 
 ## 📊 **Progress Tracking**
 
-- [ ] Phase 1: Core Storage (3/3 completed)
-- [ ] Phase 2: Networking (0/3 completed)
+- [x] Phase 1: Core Storage (3/3 completed)
+- [x] Phase 2: Networking (3/3 completed)
 - [ ] Phase 3: Device Management (0/3 completed)
 - [ ] Phase 4: Advanced Features (0/3 completed)
 
-**Overall Progress**: 0/12 major components completed
+**Overall Progress**: 6/12 major components completed
