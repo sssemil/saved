@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::*;
-use saved_core_rs::{create_or_open_account, Config};
+use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
 use crate::utils::formatting::{print_success, print_section_header};
 
@@ -24,12 +24,12 @@ pub async fn init_command(account_path: &PathBuf, name: &str, verbose: bool) -> 
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
-    // Create account
-    let account = create_or_open_account(config).await?;
+    // Create account as key holder (needed for device linking)
+    let account = saved_core::AccountHandle::create_account_key_holder(config).await?;
 
     print_success("Account created successfully!");
     println!("Account name: {}", name.bright_blue());
@@ -67,7 +67,7 @@ pub async fn info_command(account_path: &PathBuf, verbose: bool) -> Result<()> {
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 

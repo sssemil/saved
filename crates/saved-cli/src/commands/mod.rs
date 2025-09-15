@@ -6,7 +6,7 @@ pub mod import_export;
 pub mod message;
 pub mod sync;
 
-pub use device::{accept_command, devices_command, link_command};
+pub use device::{accept_command, devices_command, link_command, list_authorized_command, revoke_device_command};
 pub use import_export::{export_command, import_command};
 pub use sync::{discover_command, status_command, sync_command, connect_command, relay_command};
 pub use account::{init_command, info_command};

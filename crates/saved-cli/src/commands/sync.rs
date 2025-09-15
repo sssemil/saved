@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::*;
-use saved_core_rs::{create_or_open_account, Config};
+use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
 use crate::utils::formatting::{print_success, print_section_header};
 use comfy_table::{Table, presets::UTF8_FULL, Cell};
@@ -24,7 +24,7 @@ pub async fn sync_command(account_path: &PathBuf, daemon: bool, verbose: bool) -
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -73,7 +73,7 @@ pub async fn status_command(account_path: &PathBuf, verbose: bool) -> Result<()>
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -156,7 +156,7 @@ pub async fn discover_command(account_path: &PathBuf, verbose: bool) -> Result<(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024,
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -206,7 +206,7 @@ pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_a
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024,
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -266,7 +266,7 @@ pub async fn relay_command(account_path: &PathBuf, relay_address: String, verbos
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024,
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 

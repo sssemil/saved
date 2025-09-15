@@ -29,12 +29,13 @@
   - CRDT-based message synchronization
 
 ### **3. Device Authentication & Authorization**
-- **Current State**: Basic certificate structure exists but not fully implemented
-- **Missing**:
-  - Complete device linking flow
-  - QR code-based device pairing
-  - Device certificate validation
-  - Device authorization management
+- **Current State**: Complete device linking system implemented with QR codes and certificates
+- **Implemented**:
+  - Complete device linking flow with QR code generation and acceptance
+  - QR code-based device pairing with secure onboarding tokens
+  - Device certificate validation and verification
+  - Device authorization management with storage and revocation
+  - CLI commands for device management (link, accept, authorized, revoke)
 
 ### **4. File Attachment System**
 - **Current State**: Chunk storage implemented with content addressing and ref counts
@@ -145,14 +146,14 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - [ ] Add message edit/deletion convergence
 
 ### **crates/saved-core-rs/src/types.rs**
-- [ ] Complete device linking flow
-- [ ] Implement QR code-based device pairing
-- [ ] Add device certificate validation
-- [ ] Implement device authorization management
+- [x] Complete device linking flow
+- [x] Implement QR code-based device pairing
+- [x] Add device certificate validation
+- [x] Implement device authorization management
 
 ### **crates/saved-cli-rs/src/commands/**
 - [x] Fix import/export to work with real message storage
-- [ ] Implement real device discovery
+- [x] Implement device management commands (link, accept, authorized, revoke)
 - [x] Add proper sync status reporting
 - [ ] Implement file attachment handling
 
@@ -168,15 +169,15 @@ The most critical missing piece is **real message storage and retrieval**. The C
 - ✅ **Networking**: Full libp2p integration with real mDNS, DCUtR, relay, and gossipsub
 - ✅ **Message Handling**: Real SAVED protocol message parsing and gossipsub integration
 - ✅ **CLI Integration**: Fixed peer discovery, status reporting, and manual connections
+- ✅ **Device Management**: Complete QR code-based device linking, certificate validation, and authorization management
 - 🚧 **Core Functionality**: CRDT conflict resolution and event synchronization outstanding
 - 🚧 **Storage**: CRDT event persistence outstanding
-- 🚧 **Device Management**: Authentication and linking incomplete
 
 ## 📊 **Progress Tracking**
 
 - [x] Phase 1: Core Storage (3/3 completed)
 - [x] Phase 2: Networking (3/3 completed)
-- [ ] Phase 3: Device Management (0/3 completed)
+- [x] Phase 3: Device Management (3/3 completed)
 - [ ] Phase 4: Advanced Features (0/3 completed)
 
-**Overall Progress**: 8/12 major components completed
+**Overall Progress**: 9/12 major components completed

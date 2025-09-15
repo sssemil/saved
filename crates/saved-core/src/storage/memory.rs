@@ -242,6 +242,18 @@ impl Storage for MemoryStorage {
         }
     }
 
+    async fn store_device_key(&self, device_key: &crate::crypto::DeviceKey) -> Result<()> {
+        // Store the device key as raw bytes (64 bytes: 32 signing + 32 verifying)
+        let mut key_bytes = Vec::new();
+        key_bytes.extend_from_slice(&device_key.private_key_bytes());
+        key_bytes.extend_from_slice(&device_key.public_key_bytes());
+        
+        let mut stored_key = self.device_key.write().await;
+        *stored_key = Some(key_bytes);
+        
+        Ok(())
+    }
+
     async fn get_stats(&self) -> Result<StorageStats> {
         let ops = self.operations.read().await;
         let messages = self.messages.read().await;

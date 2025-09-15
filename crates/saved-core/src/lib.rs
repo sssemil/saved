@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use saved_core_rs::{AccountHandle, Config};
+//! use saved_core::{AccountHandle, Config};
 //! use std::path::PathBuf;
 //!
 //! #[tokio::main]
@@ -25,7 +25,7 @@
 //!         use_kademlia: false,
 //!         chunk_size: 2 * 1024 * 1024,
 //!         max_parallel_chunks: 4,
-//!         storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+//!         storage_backend: saved_core::storage::StorageBackend::Sqlite,
 //!         account_passphrase: None,
 //!     };
 //!     

@@ -1,5 +1,5 @@
 [package]
-name = "saved-cli-rs"
+name = "saved-cli"
 version = "0.1.0"
 edition = "2021"
 description = "Command-line interface for SAVED - Personal Messages Sync"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core library
-saved-core-rs = { path = "../saved-core-rs" }
+saved-core = { path = "../saved-core" }
 
 # CLI framework
 clap = { version = "4.4", features = ["derive", "color", "suggestions"] }
@@ -44,9 +44,7 @@ walkdir = "2.3"
 colored = "2.0"
 indicatif = "0.17"
 
-# QR code generation
-qrcode = "0.14"
-image = "0.24"
+# QR code generation removed - not used in CLI anymore
 
 # Table formatting
 comfy-table = "7.0"

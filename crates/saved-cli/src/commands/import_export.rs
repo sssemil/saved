@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::*;
-use saved_core_rs::{create_or_open_account, Config};
+use saved_core::{create_or_open_account, Config};
 use std::path::PathBuf;
 use crate::utils::validation::validate_file_path;
 use crate::utils::formatting::print_warning;
@@ -24,7 +24,7 @@ pub async fn export_command(account_path: &PathBuf, output: &PathBuf, verbose: b
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -106,7 +106,7 @@ pub async fn import_command(account_path: &PathBuf, input: &PathBuf, verbose: bo
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -217,7 +217,7 @@ mod tests {
             use_kademlia: false,
             chunk_size: 2 * 1024 * 1024,
             max_parallel_chunks: 4,
-            storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+            storage_backend: saved_core::storage::StorageBackend::Sqlite,
             account_passphrase: None,
         };
         let mut handle = create_or_open_account(config).await.unwrap();

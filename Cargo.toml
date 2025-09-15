@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/*",
-    "relay-server",
 ]
 resolver = "2"
 

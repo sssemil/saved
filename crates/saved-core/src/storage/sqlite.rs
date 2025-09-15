@@ -744,6 +744,22 @@ impl Storage for SqliteStorage {
         }
     }
 
+    async fn store_device_key(&self, device_key: &crate::crypto::DeviceKey) -> Result<()> {
+        let conn = self.db.lock().unwrap();
+        
+        // Store the device key as raw bytes (64 bytes: 32 signing + 32 verifying)
+        let mut key_bytes = Vec::new();
+        key_bytes.extend_from_slice(&device_key.private_key_bytes());
+        key_bytes.extend_from_slice(&device_key.public_key_bytes());
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO device_info (id, device_key) VALUES (1, ?)",
+            [key_bytes],
+        ).map_err(|e| Error::Storage(format!("Failed to store device key: {}", e)))?;
+        
+        Ok(())
+    }
+
     async fn get_stats(&self) -> Result<StorageStats> {
         let db = self.db.lock().unwrap();
         // Count operations

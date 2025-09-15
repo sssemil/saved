@@ -101,6 +101,13 @@ enum Commands {
     },
     /// Show connected devices
     Devices,
+    /// List all authorized devices
+    Authorized,
+    /// Revoke device authorization
+    Revoke {
+        /// Device ID to revoke
+        device_id: String,
+    },
     /// Discover peers on the local network (mDNS/manual scan)
     Discover,
     /// Connect to a discovered peer
@@ -184,6 +191,12 @@ async fn main() -> Result<()> {
         }
         Commands::Devices => {
             devices_command(&cli.account_path, cli.verbose).await?;
+        }
+        Commands::Authorized => {
+            list_authorized_command(&cli.account_path, cli.verbose).await?;
+        }
+        Commands::Revoke { device_id } => {
+            revoke_device_command(&cli.account_path, device_id, cli.verbose).await?;
         }
         Commands::Discover => {
             discover_command(&cli.account_path, cli.verbose).await?;

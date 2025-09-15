@@ -3,7 +3,7 @@
 use anyhow::Result;
 use colored::*;
 use comfy_table::{Cell, Table};
-use saved_core_rs::{create_or_open_account, Config, MessageId};
+use saved_core::{create_or_open_account, Config, MessageId};
 use std::path::PathBuf;
 use crate::utils::formatting::{format_message_id, format_short_message_id, format_file_size};
 use crate::utils::validation::{validate_message_content, validate_message_id, validate_attachment};
@@ -48,7 +48,7 @@ pub async fn create_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -91,7 +91,7 @@ pub async fn list_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -181,7 +181,7 @@ pub async fn edit_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -224,7 +224,7 @@ pub async fn delete_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -255,7 +255,7 @@ pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: boo
     let msg_id = parse_message_id(message_id)?;
 
     // Create account configuration
-    let config = saved_core_rs::types::Config {
+    let config = saved_core::types::Config {
         storage_path: account_path.clone(),
         network_port: 0,
         enable_mdns: false,
@@ -264,7 +264,7 @@ pub async fn show_command(account_path: &PathBuf, message_id: &str, verbose: boo
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 

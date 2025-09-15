@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use colored::*;
-use saved_core_rs::{create_or_open_account, Config, QrPayload};
+use saved_core::{create_or_open_account, Config, QrPayload};
 use std::path::PathBuf;
 use crate::utils::formatting::{print_success, print_section_header};
 use comfy_table::{Table, presets::UTF8_FULL, Cell};
@@ -27,7 +27,7 @@ pub async fn link_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -141,7 +141,7 @@ pub async fn accept_command(account_path: &PathBuf, payload: &str, verbose: bool
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -186,7 +186,7 @@ pub async fn devices_command(account_path: &PathBuf, verbose: bool) -> Result<()
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -259,7 +259,7 @@ pub async fn accept_link_command(
     }
 
     // Parse the QR payload
-    let qr_payload: saved_core_rs::QrPayload = serde_json::from_str(&qr_payload_json)
+    let qr_payload: saved_core::QrPayload = serde_json::from_str(&qr_payload_json)
         .map_err(|e| anyhow::anyhow!("Failed to parse QR payload: {}", e))?;
 
     if verbose {
@@ -279,7 +279,7 @@ pub async fn accept_link_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -328,7 +328,7 @@ pub async fn list_authorized_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 
@@ -398,7 +398,7 @@ pub async fn revoke_device_command(
         use_kademlia: false,
         chunk_size: 2 * 1024 * 1024, // 2 MiB
         max_parallel_chunks: 4,
-        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        storage_backend: saved_core::storage::StorageBackend::Sqlite,
         account_passphrase: None,
     };
 

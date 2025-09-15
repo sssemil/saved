@@ -371,6 +371,12 @@ impl NetworkManager {
         Ok(())
     }
 
+    /// Get the current listening addresses
+    pub async fn get_listening_addresses(&self) -> Result<Vec<String>> {
+        let listening_addrs = self.listening_addresses.lock().await;
+        Ok(listening_addrs.clone())
+    }
+
     /// Connect to a peer with proper connection management
     pub async fn connect_to_peer(&mut self, device_id: String, addresses: Vec<String>) -> Result<()> {
         if let Some(swarm) = self.swarm.lock().await.as_mut() {
