@@ -31,19 +31,9 @@ use {
 
 mod net_behaviour {
     use libp2p::{
-        gossipsub, mdns, identify, autonat, relay, dcutr, request_response,
+        gossipsub, mdns, identify, autonat, relay, dcutr,
         swarm::NetworkBehaviour,
     };
-    
-    /// Custom protocol for SAVED message synchronization
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    pub struct SavedProtocol;
-    
-    impl AsRef<str> for SavedProtocol {
-        fn as_ref(&self) -> &str {
-            "/saved/sync/1.0.0"
-        }
-    }
     
     #[derive(NetworkBehaviour)]
     pub struct NetBehaviour {
@@ -53,7 +43,6 @@ mod net_behaviour {
         pub autonat: autonat::Behaviour,
         pub relay_client: relay::client::Behaviour,
         pub dcutr: dcutr::Behaviour,
-        pub request_response: request_response::Behaviour<SavedProtocol, Vec<u8>, Vec<u8>>,
     }
 }
 
@@ -359,12 +348,6 @@ impl NetworkManager {
                         
                         let dcutr = dcutr::Behaviour::new(keypair.public().to_peer_id());
                         
-                        // Create request-response behavior for our custom protocol
-                        let request_response = request_response::Behaviour::new(
-                            [(net_behaviour::SavedProtocol, request_response::ProtocolSupport::Full)],
-                            request_response::Config::default(),
-                        );
-                        
                         net_behaviour::NetBehaviour {
                             mdns,
                             gossipsub,
@@ -372,7 +355,6 @@ impl NetworkManager {
                             autonat,
                             relay_client: relay_behaviour,
                             dcutr,
-                            request_response,
                         }
                     })
                     .map_err(|e| Error::Network(e.to_string()))?
@@ -636,17 +618,6 @@ impl NetworkManager {
                             SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::Dcutr(event)) => {
                                 println!("DCUtR event: {:?}", event);
                             }
-                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::RequestResponse(request_response::Event::Message { message, channel, .. })) => {
-                                println!("Received request-response message: {} bytes", message.len());
-                                // Handle our custom protocol messages here
-                                self.handle_saved_protocol_message(message, channel).await;
-                            }
-                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::RequestResponse(request_response::Event::OutboundFailure { request_id, error, .. })) => {
-                                println!("Request-response outbound failure: {} - {:?}", request_id, error);
-                            }
-                            SwarmEvent::Behaviour(net_behaviour::NetBehaviourEvent::RequestResponse(request_response::Event::InboundFailure { error, .. })) => {
-                                println!("Request-response inbound failure: {:?}", error);
-                            }
                             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                                 println!("Outgoing connection error to {:?}: {}", peer_id, error);
                             }
@@ -680,126 +651,6 @@ impl NetworkManager {
         }
     }
 
-    /// Handle messages from our custom SAVED protocol
-    async fn handle_saved_protocol_message(&self, message: Vec<u8>, channel: request_response::ResponseChannel<Vec<u8>>) {
-        // Handle incoming request
-        println!("Received SAVED protocol request: {} bytes", message.len());
-        
-        // Try to parse as protobuf message
-        if let Ok(protobuf_msg) = crate::protobuf::SavedMessage::decode(&message[..]) {
-            self.handle_protobuf_message(protobuf_msg, channel).await;
-        } else {
-            println!("Failed to parse protobuf message");
-            // Send error response
-            let _ = channel.send_response(vec![]);
-        }
-    }
-
-    /// Handle parsed protobuf messages
-    async fn handle_protobuf_message(&self, message: crate::protobuf::SavedMessage, channel: request_response::ResponseChannel<Vec<u8>>) {
-        match message.message_type {
-            Some(crate::protobuf::saved_message::MessageType::AnnounceHeads(announce)) => {
-                println!("Received AnnounceHeads from peer");
-                // Handle head announcements for CRDT sync
-                self.handle_announce_heads(announce).await;
-                // Send acknowledgment
-                let response = crate::protobuf::SavedMessage {
-                    message_type: Some(crate::protobuf::saved_message::MessageType::Ack(crate::protobuf::SavedAck {
-                        up_to_op: announce.heads.clone(),
-                        timestamp: chrono::Utc::now().timestamp() as u64,
-                    })),
-                };
-                let mut buf = Vec::new();
-                if let Ok(_) = response.encode(&mut buf) {
-                    let _ = channel.send_response(buf);
-                }
-            }
-            Some(crate::protobuf::saved_message::MessageType::FetchOpsReq(req)) => {
-                println!("Received FetchOpsReq from peer");
-                // Handle operation fetch request
-                let response = self.handle_fetch_ops_request(req).await;
-                let mut buf = Vec::new();
-                if let Ok(_) = response.encode(&mut buf) {
-                    let _ = channel.send_response(buf);
-                }
-            }
-            Some(crate::protobuf::saved_message::MessageType::HaveChunksReq(req)) => {
-                println!("Received HaveChunksReq from peer");
-                // Handle chunk availability request
-                let response = self.handle_have_chunks_request(req).await;
-                let mut buf = Vec::new();
-                if let Ok(_) = response.encode(&mut buf) {
-                    let _ = channel.send_response(buf);
-                }
-            }
-            Some(crate::protobuf::saved_message::MessageType::FetchChunksReq(req)) => {
-                println!("Received FetchChunksReq from peer");
-                // Handle chunk fetch request
-                let response = self.handle_fetch_chunks_request(req).await;
-                let mut buf = Vec::new();
-                if let Ok(_) = response.encode(&mut buf) {
-                    let _ = channel.send_response(buf);
-                }
-            }
-            _ => {
-                println!("Unknown message type received");
-                let _ = channel.send_response(vec![]);
-            }
-        }
-    }
-
-    /// Handle head announcements for CRDT synchronization
-    async fn handle_announce_heads(&self, announce: crate::protobuf::SavedAnnounceHeads) {
-        println!("Processing head announcements: {:?}", announce.heads);
-        // TODO: Implement CRDT synchronization logic
-        // This would involve:
-        // 1. Comparing local heads with remote heads
-        // 2. Determining missing operations
-        // 3. Requesting missing operations
-        // 4. Applying operations to local state
-    }
-
-    /// Handle operation fetch requests
-    async fn handle_fetch_ops_request(&self, req: crate::protobuf::SavedFetchOpsReq) -> crate::protobuf::SavedMessage {
-        println!("Handling fetch ops request for {} operations", req.ops.len());
-        // TODO: Implement operation fetching logic
-        // This would involve:
-        // 1. Looking up requested operations in local storage
-        // 2. Returning the operations in the response
-        crate::protobuf::SavedMessage {
-            message_type: Some(crate::protobuf::saved_message::MessageType::FetchOpsResp(crate::protobuf::SavedFetchOpsResp {
-                ops: vec![], // TODO: Return actual operations
-            })),
-        }
-    }
-
-    /// Handle chunk availability requests
-    async fn handle_have_chunks_request(&self, req: crate::protobuf::SavedHaveChunksReq) -> crate::protobuf::SavedMessage {
-        println!("Handling have chunks request for {} chunks", req.chunks.len());
-        // TODO: Implement chunk availability checking
-        // This would involve:
-        // 1. Checking which chunks are available locally
-        // 2. Returning availability information
-        crate::protobuf::SavedMessage {
-            message_type: Some(crate::protobuf::saved_message::MessageType::HaveChunksResp(crate::protobuf::SavedHaveChunksResp {
-                available: vec![], // TODO: Return actual availability
-            })),
-        }
-    }
-
-    /// Handle chunk fetch requests
-    async fn handle_fetch_chunks_request(&self, req: crate::protobuf::SavedFetchChunksReq) -> crate::protobuf::SavedMessage {
-        println!("Handling fetch chunks request for {} chunks", req.chunks.len());
-        // TODO: Implement chunk fetching logic
-        // This would involve:
-        // 1. Retrieving requested chunks from local storage
-        // 2. Returning the chunk data
-        crate::protobuf::SavedMessage {
-            message_type: Some(crate::protobuf::saved_message::MessageType::FetchChunksResp(crate::protobuf::SavedFetchChunksResp {
-                chunks: vec![], // TODO: Return actual chunks
-            })),
-        }
-    }
 
     /// Perform periodic network maintenance tasks
     async fn perform_network_maintenance(&mut self) -> Result<()> {
