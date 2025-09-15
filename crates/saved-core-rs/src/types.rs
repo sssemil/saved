@@ -196,6 +196,10 @@ pub enum Event {
         reason: String,
         attempt_count: u32,
     },
+    /// Relay connection attempt
+    RelayConnectionAttempt {
+        relay_address: String,
+    },
     /// Network error occurred
     NetworkError {
         error_type: String,
@@ -886,6 +890,15 @@ impl AccountHandle {
     pub async fn connect_to_peer(&mut self, device_id: String, addresses: Vec<String>) -> crate::Result<()> {
         if let Some(ref mut nm) = self.network_manager {
             nm.connect_to_peer(device_id, addresses).await
+        } else {
+            Err(crate::error::Error::Network("Network manager not initialized".to_string()))
+        }
+    }
+
+    /// Connect to a relay server for hole punching
+    pub async fn connect_to_relay(&mut self, relay_address: String) -> crate::Result<()> {
+        if let Some(ref mut nm) = self.network_manager {
+            nm.connect_to_relay(relay_address).await
         } else {
             Err(crate::error::Error::Network("Network manager not initialized".to_string()))
         }

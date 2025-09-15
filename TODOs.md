@@ -3,13 +3,24 @@
 ## 🚧 **Major Missing Components**
 
 ### **1. Real Networking Implementation**
-- **Current State**: Simplified placeholder networking with simulated connections
-- **Missing**: 
-  - Full `libp2p` integration (currently commented out due to API changes)
-  - Real mDNS discovery
-  - DCUtR hole punching for NAT traversal
-  - Relay fallback connections
-  - Actual peer-to-peer message synchronization
+- **Current State**: Full libp2p integration with real mDNS, DCUtR, relay, and gossipsub
+- **Completed**: 
+  - ✅ Full `libp2p` integration with latest API
+  - ✅ Real mDNS discovery
+  - ✅ DCUtR hole punching for NAT traversal
+  - ✅ Relay fallback connections
+  - ✅ Actual peer-to-peer message synchronization
+  - ✅ Public relay server for hole punching
+
+### **1.1. Relay Server Implementation**
+- **Current State**: ✅ **COMPLETED** - Public relay server with full libp2p integration
+- **Features**:
+  - ✅ Simple public relay server that accepts all traffic
+  - ✅ Full libp2p relay behavior with reservation and circuit management
+  - ✅ CLI command for connecting to relay servers (`saved relay <address>`)
+  - ✅ Integration with SAVED networking layer
+  - ✅ Hole punching support through DCUtR
+  - ✅ Relay address: `/ip4/127.0.0.1/tcp/9090/p2p/12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X`
 
 ### **2. Message Storage & Retrieval**
 - **Current State**: SQLite-backed message storage implemented with CRUD and listing

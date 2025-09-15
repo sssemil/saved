@@ -8,8 +8,7 @@ pub mod sync;
 
 pub use device::{accept_command, devices_command, link_command};
 pub use import_export::{export_command, import_command};
-pub use sync::{discover_command, status_command, sync_command};
-pub use sync::connect_command;
+pub use sync::{discover_command, status_command, sync_command, connect_command, relay_command};
 pub use account::{init_command, info_command};
 pub use message::{create_command, list_command, edit_command, delete_command, show_command};
 

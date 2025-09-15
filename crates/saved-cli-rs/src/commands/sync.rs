@@ -250,3 +250,41 @@ pub async fn connect_command(account_path: &PathBuf, device_id: &str, override_a
     Ok(())
 }
 
+/// Connect to a relay server for hole punching
+pub async fn relay_command(account_path: &PathBuf, relay_address: String, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Connecting to relay server: {}", relay_address);
+    }
+
+    // Create configuration
+    let config = Config {
+        storage_path: account_path.clone(),
+        network_port: 0,
+        enable_mdns: true,
+        allow_public_relays: true, // Enable relay support
+        bootstrap_multiaddrs: Vec::new(),
+        use_kademlia: false,
+        chunk_size: 2 * 1024 * 1024,
+        max_parallel_chunks: 4,
+        storage_backend: saved_core_rs::storage::StorageBackend::Sqlite,
+        account_passphrase: None,
+    };
+
+    let mut account = create_or_open_account(config).await?;
+    account.start_network().await?;
+
+    match account.connect_to_relay(relay_address.clone()).await {
+        Ok(_) => {
+            print_success("Relay connection attempt initiated");
+            if verbose {
+                println!("Relay address: {}", relay_address);
+            }
+        }
+        Err(e) => {
+            println!("{} {}", "Failed to connect to relay:".red(), e);
+        }
+    }
+
+    Ok(())
+}
+

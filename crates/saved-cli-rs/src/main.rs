@@ -111,6 +111,11 @@ enum Commands {
         #[arg(short, long)]
         address: Vec<String>,
     },
+    /// Connect to a relay server for hole punching
+    Relay {
+        /// Relay server address (e.g., /ip4/127.0.0.1/tcp/9090/p2p/12D3KooW...)
+        relay_address: String,
+    },
     /// Show sync status
     Status,
     /// Export messages to JSON
@@ -185,6 +190,9 @@ async fn main() -> Result<()> {
         }
         Commands::Connect { device_id, address } => {
             connect_command(&cli.account_path, &device_id, address, cli.verbose).await?;
+        }
+        Commands::Relay { relay_address } => {
+            relay_command(&cli.account_path, relay_address, cli.verbose).await?;
         }
         Commands::Status => {
             status_command(&cli.account_path, cli.verbose).await?;

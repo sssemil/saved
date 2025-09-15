@@ -495,6 +495,25 @@ impl NetworkManager {
         Ok(())
     }
 
+    /// Connect to a relay server for hole punching
+    pub async fn connect_to_relay(&mut self, relay_address: String) -> Result<()> {
+        if let Some(swarm) = self.swarm.lock().await.as_mut() {
+            if let Ok(ma) = relay_address.parse::<Multiaddr>() {
+                println!("🔗 Connecting to relay server: {}", relay_address);
+                swarm.dial(ma).map_err(|e| Error::Network(e.to_string()))?;
+                
+                // Send event
+                let _ = self.event_sender.send(Event::RelayConnectionAttempt {
+                    relay_address: relay_address.clone(),
+                });
+                
+                println!("✅ Relay connection attempt initiated");
+                return Ok(());
+            }
+        }
+        Err(Error::Network("Failed to parse relay address".to_string()))
+    }
+
     /// Simulate a connection attempt (placeholder for real networking)
     async fn simulate_connection_attempt(&self, device_id: &str, _addresses: Vec<String>) -> Result<()> {
         // Simulate connection delay
