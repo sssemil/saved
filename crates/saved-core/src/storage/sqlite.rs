@@ -1217,7 +1217,7 @@ impl Storage for SqliteStorage {
         let mut space_freed = 0u64;
         
         for row in rows {
-            let (attachment_id, size, chunk_id) = row?;
+            let (_attachment_id, size, chunk_id) = row?;
             attachments_removed += 1;
             space_freed += size as u64;
             

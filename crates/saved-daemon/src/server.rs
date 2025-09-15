@@ -57,6 +57,11 @@ pub enum DaemonRequest {
     NetworkScan,
     AccountExport { output_path: String },
     AccountImport { input_path: String },
+    InitializeChunkSync,
+    StoreChunk { data: Vec<u8> },
+    GetChunk { chunk_id: String },
+    CheckChunkAvailability { chunk_ids: Vec<String> },
+    FetchMissingChunks { chunk_ids: Vec<String> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -93,6 +98,11 @@ pub enum DaemonResponse {
     NetworkScanned { discovered_count: usize },
     AccountExported { output_path: String },
     AccountImported { messages_imported: usize },
+    ChunkSyncInitialized,
+    ChunkStored { chunk_id: String },
+    ChunkData { chunk_id: String, data: Option<Vec<u8>> },
+    ChunkAvailability { availability: std::collections::HashMap<String, bool> },
+    ChunksFetched { fetched_count: usize },
     Success,
     Error(String),
 }
@@ -518,6 +528,98 @@ impl DaemonServer {
                         }
                     }
                     Err(e) => DaemonResponse::Error(format!("Failed to read import file: {}", e)),
+                }
+            }
+            DaemonRequest::InitializeChunkSync => {
+                match account.initialize_chunk_sync().await {
+                    Ok(_) => DaemonResponse::ChunkSyncInitialized,
+                    Err(e) => DaemonResponse::Error(format!("Failed to initialize chunk sync: {}", e)),
+                }
+            }
+            DaemonRequest::StoreChunk { data } => {
+                match account.store_chunk(&data).await {
+                    Ok(chunk_id) => DaemonResponse::ChunkStored { 
+                        chunk_id: format!("{:02x?}", chunk_id).replace(" ", "").replace("[", "").replace("]", "")
+                    },
+                    Err(e) => DaemonResponse::Error(format!("Failed to store chunk: {}", e)),
+                }
+            }
+            DaemonRequest::GetChunk { chunk_id } => {
+                // Parse chunk ID from string
+                let chunk_id_bytes = if chunk_id.len() == 64 {
+                    // Hex string
+                    match hex::decode(&chunk_id) {
+                        Ok(bytes) if bytes.len() == 32 => {
+                            let mut chunk_id_array = [0u8; 32];
+                            chunk_id_array.copy_from_slice(&bytes);
+                            chunk_id_array
+                        }
+                        _ => return DaemonResponse::Error("Invalid chunk ID format".to_string()),
+                    }
+                } else {
+                    return DaemonResponse::Error("Chunk ID must be 64 hex characters".to_string());
+                };
+                
+                match account.get_chunk(&chunk_id_bytes).await {
+                    Ok(data) => DaemonResponse::ChunkData { 
+                        chunk_id,
+                        data
+                    },
+                    Err(e) => DaemonResponse::Error(format!("Failed to get chunk: {}", e)),
+                }
+            }
+            DaemonRequest::CheckChunkAvailability { chunk_ids } => {
+                // Parse chunk IDs
+                let mut chunk_id_bytes = Vec::new();
+                for chunk_id in &chunk_ids {
+                    if chunk_id.len() == 64 {
+                        match hex::decode(chunk_id) {
+                            Ok(bytes) if bytes.len() == 32 => {
+                                let mut chunk_id_array = [0u8; 32];
+                                chunk_id_array.copy_from_slice(&bytes);
+                                chunk_id_bytes.push(chunk_id_array);
+                            }
+                            _ => return DaemonResponse::Error(format!("Invalid chunk ID format: {}", chunk_id)),
+                        }
+                    } else {
+                        return DaemonResponse::Error(format!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                    }
+                }
+                
+                match account.check_chunk_availability(&chunk_id_bytes).await {
+                    Ok(availability) => {
+                        let mut availability_map = std::collections::HashMap::new();
+                        for (i, chunk_id) in chunk_ids.iter().enumerate() {
+                            if i < chunk_id_bytes.len() {
+                                availability_map.insert(chunk_id.clone(), availability.get(&chunk_id_bytes[i]).copied().unwrap_or(false));
+                            }
+                        }
+                        DaemonResponse::ChunkAvailability { availability: availability_map }
+                    }
+                    Err(e) => DaemonResponse::Error(format!("Failed to check chunk availability: {}", e)),
+                }
+            }
+            DaemonRequest::FetchMissingChunks { chunk_ids } => {
+                // Parse chunk IDs
+                let mut chunk_id_bytes = Vec::new();
+                for chunk_id in &chunk_ids {
+                    if chunk_id.len() == 64 {
+                        match hex::decode(chunk_id) {
+                            Ok(bytes) if bytes.len() == 32 => {
+                                let mut chunk_id_array = [0u8; 32];
+                                chunk_id_array.copy_from_slice(&bytes);
+                                chunk_id_bytes.push(chunk_id_array);
+                            }
+                            _ => return DaemonResponse::Error(format!("Invalid chunk ID format: {}", chunk_id)),
+                        }
+                    } else {
+                        return DaemonResponse::Error(format!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                    }
+                }
+                
+                match account.fetch_missing_chunks(&chunk_id_bytes).await {
+                    Ok(_) => DaemonResponse::ChunksFetched { fetched_count: chunk_ids.len() },
+                    Err(e) => DaemonResponse::Error(format!("Failed to fetch missing chunks: {}", e)),
                 }
             }
         }

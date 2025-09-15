@@ -48,6 +48,7 @@ pub mod storage;
 pub mod sync;
 pub mod types;
 pub mod device_linking;
+pub mod chunk_sync;
 
 // Re-export main types and functions
 pub use error::{Error, Result};

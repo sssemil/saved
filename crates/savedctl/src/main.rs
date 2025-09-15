@@ -74,6 +74,11 @@ enum Commands {
         #[command(subcommand)]
         command: AccountCommands,
     },
+    /// Manage chunk synchronization
+    Chunk {
+        #[command(subcommand)]
+        command: ChunkCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -200,6 +205,34 @@ enum AccountCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ChunkCommands {
+    /// Initialize chunk synchronization
+    Init,
+    /// Store a chunk
+    Store {
+        /// File path to store as chunk
+        file_path: String,
+    },
+    /// Get a chunk by ID
+    Get {
+        /// Chunk ID (64 hex characters)
+        chunk_id: String,
+        /// Output file path
+        output_path: String,
+    },
+    /// Check chunk availability
+    Check {
+        /// Chunk IDs to check (64 hex characters each)
+        chunk_ids: Vec<String>,
+    },
+    /// Fetch missing chunks
+    Fetch {
+        /// Chunk IDs to fetch (64 hex characters each)
+        chunk_ids: Vec<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -233,6 +266,7 @@ async fn main() -> Result<()> {
                 Commands::Attachment { command } => handle_attachment_via_daemon(&client, command).await?,
                 Commands::Network { command } => handle_network_via_daemon(&client, command).await?,
                 Commands::Account { command } => handle_account_via_daemon(&client, command).await?,
+                Commands::Chunk { command } => handle_chunk_via_daemon(&client, command).await?,
             }
             return Ok(());
         }
@@ -242,15 +276,16 @@ async fn main() -> Result<()> {
     println!("{}", "Daemon not running, using direct database access".yellow());
     let mut account = AccountHandle::create_or_open(config).await?;
     
-    match cli.command {
-        Commands::Status => handle_status(&account).await?,
-        Commands::Device { command } => handle_device(&account, command).await?,
-        Commands::Peer { command } => handle_peer(&account, command).await?,
-        Commands::Message { command } => handle_message(&mut account, command).await?,
-        Commands::Attachment { command } => handle_attachment(&account, command).await?,
-        Commands::Network { command } => handle_network(&account, command).await?,
-        Commands::Account { command } => handle_account(&account, command).await?,
-    }
+            match cli.command {
+                Commands::Status => handle_status(&account).await?,
+                Commands::Device { command } => handle_device(&account, command).await?,
+                Commands::Peer { command } => handle_peer(&account, command).await?,
+                Commands::Message { command } => handle_message(&mut account, command).await?,
+                Commands::Attachment { command } => handle_attachment(&account, command).await?,
+                Commands::Network { command } => handle_network(&account, command).await?,
+                Commands::Account { command } => handle_account(&account, command).await?,
+                Commands::Chunk { command } => handle_chunk(&mut account, command).await?,
+            }
     
     Ok(())
 }
@@ -1043,5 +1078,178 @@ async fn handle_attachment(_account: &AccountHandle, _command: AttachmentCommand
 async fn handle_account(_account: &AccountHandle, _command: AccountCommands) -> Result<()> {
     println!("{}", "Account management requires daemon to be running".yellow());
     println!("Please start the daemon with: cargo run --bin saved-daemon");
+    Ok(())
+}
+
+
+async fn handle_chunk_via_daemon(client: &DaemonClient, command: ChunkCommands) -> Result<()> {
+    match command {
+        ChunkCommands::Init => {
+            let response = client.send_request(DaemonRequest::InitializeChunkSync).await?;
+            match response {
+                DaemonResponse::ChunkSyncInitialized => {
+                    println!("{}", "Chunk synchronization initialized".green());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        ChunkCommands::Store { file_path } => {
+            let data = std::fs::read(&file_path)?;
+            let response = client.send_request(DaemonRequest::StoreChunk { data }).await?;
+            match response {
+                DaemonResponse::ChunkStored { chunk_id } => {
+                    println!("Chunk stored with ID: {}", chunk_id.bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        ChunkCommands::Get { chunk_id, output_path } => {
+            let response = client.send_request(DaemonRequest::GetChunk { chunk_id: chunk_id.clone() }).await?;
+            match response {
+                DaemonResponse::ChunkData { chunk_id: _, data } => {
+                    if let Some(data) = data {
+                        std::fs::write(&output_path, data)?;
+                        println!("Chunk {} saved to {}", chunk_id.bright_blue(), output_path.bright_blue());
+                    } else {
+                        println!("{}", "Chunk not found".red());
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        ChunkCommands::Check { chunk_ids } => {
+            let response = client.send_request(DaemonRequest::CheckChunkAvailability { chunk_ids: chunk_ids.clone() }).await?;
+            match response {
+                DaemonResponse::ChunkAvailability { availability } => {
+                    println!("Chunk availability:");
+                    for (chunk_id, is_available) in availability {
+                        let status = if is_available { "Available".green() } else { "Not available".red() };
+                        println!("  {}: {}", chunk_id.bright_blue(), status);
+                    }
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+        ChunkCommands::Fetch { chunk_ids } => {
+            let response = client.send_request(DaemonRequest::FetchMissingChunks { chunk_ids: chunk_ids.clone() }).await?;
+            match response {
+                DaemonResponse::ChunksFetched { fetched_count } => {
+                    println!("Fetched {} chunks from peers", fetched_count.to_string().bright_blue());
+                }
+                DaemonResponse::Error(msg) => {
+                    println!("{}", format!("Error: {}", msg).red());
+                }
+                _ => {
+                    println!("{}", "Unexpected response type".red());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_chunk(account: &mut AccountHandle, command: ChunkCommands) -> Result<()> {
+    match command {
+        ChunkCommands::Init => {
+            account.initialize_chunk_sync().await?;
+            println!("{}", "Chunk synchronization initialized".green());
+        }
+        ChunkCommands::Store { file_path } => {
+            let data = std::fs::read(&file_path)?;
+            let chunk_id = account.store_chunk(&data).await?;
+            println!("Chunk stored with ID: {}", format!("{:02x?}", chunk_id).replace(" ", "").replace("[", "").replace("]", "").bright_blue());
+        }
+        ChunkCommands::Get { chunk_id, output_path } => {
+            // Parse chunk ID from hex string
+            let chunk_id_bytes = if chunk_id.len() == 64 {
+                match hex::decode(&chunk_id) {
+                    Ok(bytes) if bytes.len() == 32 => {
+                        let mut chunk_id_array = [0u8; 32];
+                        chunk_id_array.copy_from_slice(&bytes);
+                        chunk_id_array
+                    }
+                    _ => return Err(anyhow::anyhow!("Invalid chunk ID format")),
+                }
+            } else {
+                return Err(anyhow::anyhow!("Chunk ID must be 64 hex characters"));
+            };
+            
+            if let Some(data) = account.get_chunk(&chunk_id_bytes).await? {
+                std::fs::write(&output_path, data)?;
+                println!("Chunk {} saved to {}", chunk_id.bright_blue(), output_path.bright_blue());
+            } else {
+                println!("{}", "Chunk not found".red());
+            }
+        }
+        ChunkCommands::Check { chunk_ids } => {
+            // Parse chunk IDs
+            let mut chunk_id_bytes = Vec::new();
+            for chunk_id in &chunk_ids {
+                if chunk_id.len() == 64 {
+                    match hex::decode(chunk_id) {
+                        Ok(bytes) if bytes.len() == 32 => {
+                            let mut chunk_id_array = [0u8; 32];
+                            chunk_id_array.copy_from_slice(&bytes);
+                            chunk_id_bytes.push(chunk_id_array);
+                        }
+                        _ => return Err(anyhow::anyhow!("Invalid chunk ID format: {}", chunk_id)),
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                }
+            }
+            
+            let availability = account.check_chunk_availability(&chunk_id_bytes).await?;
+            println!("Chunk availability:");
+            for (i, chunk_id) in chunk_ids.iter().enumerate() {
+                if i < chunk_id_bytes.len() {
+                    let is_available = availability.get(&chunk_id_bytes[i]).copied().unwrap_or(false);
+                    let status = if is_available { "Available".green() } else { "Not available".red() };
+                    println!("  {}: {}", chunk_id.bright_blue(), status);
+                }
+            }
+        }
+        ChunkCommands::Fetch { chunk_ids } => {
+            // Parse chunk IDs
+            let mut chunk_id_bytes = Vec::new();
+            for chunk_id in &chunk_ids {
+                if chunk_id.len() == 64 {
+                    match hex::decode(chunk_id) {
+                        Ok(bytes) if bytes.len() == 32 => {
+                            let mut chunk_id_array = [0u8; 32];
+                            chunk_id_array.copy_from_slice(&bytes);
+                            chunk_id_bytes.push(chunk_id_array);
+                        }
+                        _ => return Err(anyhow::anyhow!("Invalid chunk ID format: {}", chunk_id)),
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Chunk ID must be 64 hex characters: {}", chunk_id));
+                }
+            }
+            
+            account.fetch_missing_chunks(&chunk_id_bytes).await?;
+            println!("Fetched {} chunks from peers", chunk_ids.len().to_string().bright_blue());
+        }
+    }
     Ok(())
 }

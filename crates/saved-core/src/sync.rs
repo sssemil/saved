@@ -71,7 +71,7 @@ impl SyncManager {
             // Find operations that are not dependencies of other operations
             for op_envelope in &operations {
                 if let Some(header) = &op_envelope.header {
-                    let mut is_head = true;
+                    let is_head = true;
                     // TODO: Check dependencies when available
                     // for dep in &header.dependencies {
                     //     if all_ops.contains(dep) {
@@ -697,13 +697,13 @@ impl SyncManager {
         // If we have a network manager, try to download missing chunks
         if let Some(network_manager) = network_manager {
             // Request chunk availability from peers
-            if let Err(e) = network_manager.request_chunk_availability("", missing_chunks.clone()).await {
+            if let Err(e) = network_manager.request_chunk_availability(missing_chunks.clone()).await {
                 println!("Failed to request chunk availability: {}", e);
                 return Err(e);
             }
 
             // Request the actual chunks
-            if let Err(e) = network_manager.request_chunks("", missing_chunks).await {
+            if let Err(e) = network_manager.request_chunks(missing_chunks).await {
                 println!("Failed to request chunks: {}", e);
                 return Err(e);
             }

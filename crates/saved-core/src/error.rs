@@ -29,9 +29,6 @@ pub enum Error {
     #[error("Sync error: {0}")]
     Sync(String),
 
-    #[error("Device linking error: {0}")]
-    DeviceLinking(String),
-
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 

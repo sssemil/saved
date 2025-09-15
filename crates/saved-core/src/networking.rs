@@ -548,7 +548,7 @@ impl NetworkManager {
     pub async fn run(&mut self) -> Result<()> {
         // Implement a proper network event loop
         loop {
-                let mut message_to_handle = None;
+                let message_to_handle = None;
                 
                 {
                     if let Some(swarm) = self.swarm.lock().await.as_mut() {
@@ -712,11 +712,35 @@ impl NetworkManager {
     async fn handle_chunk_message(&self, data: &[u8]) {
         println!("Received chunk message: {} bytes", data.len());
         
-        // TODO: Handle chunk synchronization
-        // This would involve:
-        // 1. Parsing chunk metadata or data
-        // 2. Storing chunks locally
-        // 3. Updating chunk availability information
+        // Try to parse as chunk sync request
+        if let Ok(request) = serde_json::from_slice::<crate::chunk_sync::ChunkSyncRequest>(data) {
+            println!("Received chunk availability request for {} chunks", request.chunk_ids.len());
+            // TODO: Handle chunk availability request
+            return;
+        }
+        
+        // Try to parse as chunk sync response
+        if let Ok(response) = serde_json::from_slice::<crate::chunk_sync::ChunkSyncResponse>(data) {
+            println!("Received chunk availability response: {} chunks", response.availability.len());
+            // TODO: Handle chunk availability response
+            return;
+        }
+        
+        // Try to parse as chunk fetch request
+        if let Ok(request) = serde_json::from_slice::<crate::chunk_sync::ChunkFetchRequest>(data) {
+            println!("Received chunk fetch request for {} chunks", request.chunk_ids.len());
+            // TODO: Handle chunk fetch request
+            return;
+        }
+        
+        // Try to parse as chunk fetch response
+        if let Ok(response) = serde_json::from_slice::<crate::chunk_sync::ChunkFetchResponse>(data) {
+            println!("Received chunk fetch response: {} chunks", response.chunks.len());
+            // TODO: Handle chunk fetch response
+            return;
+        }
+        
+        println!("Unknown chunk message format");
     }
 
     /// Announce current head operations to peers
@@ -739,6 +763,38 @@ impl NetworkManager {
             .map_err(|e| Error::Network(format!("Failed to serialize operation request: {}", e)))?;
         
         self.send_gossipsub_message("/savedmsgs/ops", data).await
+    }
+
+    /// Request chunk availability from peers
+    pub async fn request_chunk_availability(&mut self, chunk_ids: Vec<crate::storage::sqlite::ChunkId>) -> Result<()> {
+        println!("Requesting availability for {} chunks", chunk_ids.len());
+        
+        let request = crate::chunk_sync::ChunkSyncRequest {
+            chunk_ids,
+            peer_id: "local".to_string(), // TODO: Get actual peer ID
+            timestamp: chrono::Utc::now(),
+        };
+        
+        let data = serde_json::to_vec(&request)
+            .map_err(|e| Error::Network(format!("Failed to serialize chunk availability request: {}", e)))?;
+        
+        self.send_gossipsub_message("/savedmsgs/chunks", data).await
+    }
+
+    /// Request chunks from peers
+    pub async fn request_chunks(&mut self, chunk_ids: Vec<crate::storage::sqlite::ChunkId>) -> Result<()> {
+        println!("Requesting {} chunks from peers", chunk_ids.len());
+        
+        let request = crate::chunk_sync::ChunkFetchRequest {
+            chunk_ids,
+            peer_id: "local".to_string(), // TODO: Get actual peer ID
+            timestamp: chrono::Utc::now(),
+        };
+        
+        let data = serde_json::to_vec(&request)
+            .map_err(|e| Error::Network(format!("Failed to serialize chunk fetch request: {}", e)))?;
+        
+        self.send_gossipsub_message("/savedmsgs/chunks", data).await
     }
 
     /// Perform periodic network maintenance tasks
@@ -1698,31 +1754,6 @@ impl NetworkManager {
         }
     }
 
-    /// Request chunk availability from a peer
-    pub async fn request_chunk_availability(&mut self, _peer_id: &str, chunk_ids: Vec<[u8; 32]>) -> Result<()> {
-        let cids: Vec<Vec<u8>> = chunk_ids.iter().map(|id| id.to_vec()).collect();
-        let req = HaveChunksReq { cids };
-
-        let data = req.encode_to_vec();
-        if !data.is_empty() {
-            self.send_gossipsub_message("/savedmsgs/chunks", data).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Request chunks from a peer
-    pub async fn request_chunks(&mut self, _peer_id: &str, chunk_ids: Vec<[u8; 32]>) -> Result<()> {
-        let cids: Vec<Vec<u8>> = chunk_ids.iter().map(|id| id.to_vec()).collect();
-        let req = FetchChunksReq { cids };
-
-        let data = req.encode_to_vec();
-        if !data.is_empty() {
-            self.send_gossipsub_message("/savedmsgs/chunks", data).await?;
-        }
-
-        Ok(())
-    }
 
     /// Get chunks that are missing locally
     pub async fn get_missing_chunks(&self, chunk_ids: &[[u8; 32]]) -> Result<Vec<[u8; 32]>> {
@@ -1762,7 +1793,7 @@ impl NetworkManager {
 
         // Request chunk availability from first connected peer
         if let Some(peer_id) = connected_peer_ids.first() {
-            self.request_chunk_availability(peer_id, missing_chunks).await?;
+            self.request_chunk_availability(missing_chunks).await?;
         }
 
         Ok(())

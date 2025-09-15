@@ -242,6 +242,7 @@ pub struct AccountHandle {
     event_sender: mpsc::UnboundedSender<Event>,
     _event_receiver: mpsc::UnboundedReceiver<Event>, // Keep receiver alive to prevent SendError
     network_manager: Option<crate::networking::NetworkManager>,
+    chunk_sync_manager: Option<crate::chunk_sync::ChunkSyncManager>,
 }
 
 impl AccountHandle {
@@ -308,6 +309,7 @@ impl AccountHandle {
             event_sender,
             _event_receiver: event_receiver,
             network_manager: None,
+            chunk_sync_manager: None,
         })
     }
 
@@ -1035,6 +1037,56 @@ impl AccountHandle {
     pub fn sync_manager_mut(&mut self) -> &mut sync::SyncManager {
         &mut self.sync_manager
     }
+
+    /// Initialize chunk synchronization
+    pub async fn initialize_chunk_sync(&mut self) -> crate::Result<()> {
+        if self.chunk_sync_manager.is_none() {
+            // TODO: Get vault key from sync manager when it's made public
+            let vault_key = [0u8; 32]; // Placeholder
+            // TODO: Create proper storage instance for chunk sync
+            // For now, use memory storage as placeholder
+            let storage = std::sync::Arc::new(crate::storage::MemoryStorage::new());
+            let chunk_sync_manager = crate::chunk_sync::ChunkSyncManager::new(storage, vault_key);
+            self.chunk_sync_manager = Some(chunk_sync_manager);
+        }
+        Ok(())
+    }
+
+    /// Store a chunk (for file attachments)
+    pub async fn store_chunk(&self, data: &[u8]) -> crate::Result<crate::storage::sqlite::ChunkId> {
+        if let Some(chunk_sync_manager) = &self.chunk_sync_manager {
+            chunk_sync_manager.store_chunk(data).await
+        } else {
+            Err(crate::error::Error::Storage("Chunk sync not initialized".to_string()))
+        }
+    }
+
+    /// Retrieve a chunk by ID
+    pub async fn get_chunk(&self, chunk_id: &crate::storage::sqlite::ChunkId) -> crate::Result<Option<Vec<u8>>> {
+        if let Some(chunk_sync_manager) = &self.chunk_sync_manager {
+            chunk_sync_manager.get_chunk(chunk_id).await
+        } else {
+            Err(crate::error::Error::Storage("Chunk sync not initialized".to_string()))
+        }
+    }
+
+    /// Check chunk availability across peers
+    pub async fn check_chunk_availability(&self, chunk_ids: &[crate::storage::sqlite::ChunkId]) -> crate::Result<std::collections::HashMap<crate::storage::sqlite::ChunkId, bool>> {
+        if let Some(chunk_sync_manager) = &self.chunk_sync_manager {
+            chunk_sync_manager.check_chunk_availability(chunk_ids).await
+        } else {
+            Err(crate::error::Error::Storage("Chunk sync not initialized".to_string()))
+        }
+    }
+
+    /// Fetch missing chunks from peers
+    pub async fn fetch_missing_chunks(&self, chunk_ids: &[crate::storage::sqlite::ChunkId]) -> crate::Result<()> {
+        if let Some(chunk_sync_manager) = &self.chunk_sync_manager {
+            chunk_sync_manager.fetch_missing_chunks(chunk_ids).await
+        } else {
+            Err(crate::error::Error::Storage("Chunk sync not initialized".to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1042,7 +1094,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use crate::storage::StorageBackend;
-    use crate::create_or_open_account;
     
     #[tokio::test]
     async fn test_device_linking_flow() {

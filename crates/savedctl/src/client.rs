@@ -34,6 +34,11 @@ pub enum DaemonRequest {
     NetworkScan,
     AccountExport { output_path: String },
     AccountImport { input_path: String },
+    InitializeChunkSync,
+    StoreChunk { data: Vec<u8> },
+    GetChunk { chunk_id: String },
+    CheckChunkAvailability { chunk_ids: Vec<String> },
+    FetchMissingChunks { chunk_ids: Vec<String> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,6 +75,11 @@ pub enum DaemonResponse {
     NetworkScanned { discovered_count: usize },
     AccountExported { output_path: String },
     AccountImported { messages_imported: usize },
+    ChunkSyncInitialized,
+    ChunkStored { chunk_id: String },
+    ChunkData { chunk_id: String, data: Option<Vec<u8>> },
+    ChunkAvailability { availability: std::collections::HashMap<String, bool> },
+    ChunksFetched { fetched_count: usize },
     Success,
     Error(String),
 }
