@@ -19,6 +19,12 @@ pub enum SavedError {
     TokioBroadcastNetEvent(
         #[from] tokio::sync::broadcast::error::SendError<network::SavedNetworkEvent>,
     ),
+    #[error("tokio::sync::mpsc::error::SendError<network::cmd::SavedNetworkCommand>: {0}")]
+    TokioMpscSendNetCmd(
+        #[from] tokio::sync::mpsc::error::SendError<network::cmd::SavedNetworkCommand>,
+    ),
+    #[error("Kad NoKnownPeers: {0}")]
+    KadNoKnownPeers(#[from] libp2p::kad::NoKnownPeers),
 }
 
 pub type SavedResult<T> = Result<T, SavedError>;

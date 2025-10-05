@@ -1,3 +1,4 @@
+use crate::error::SavedResult;
 use crate::network::{KadMode, SavedNetworkCommand, SavedNetworkEvent};
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{broadcast, mpsc};
@@ -11,11 +12,12 @@ pub struct SavedHandle {
 }
 
 impl SavedHandle {
-    pub async fn join(mut self) {
+    pub async fn join(mut self) -> SavedResult<()> {
         if let Some(handle) = self.task_handle.take() {
             // Await consumes the JoinHandle; after take() we own it.
-            let _ = handle.await;
+            handle.await?;
         }
+        Ok(())
     }
 
     pub async fn set_mdns_enabled(

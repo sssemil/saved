@@ -1,3 +1,4 @@
+use crate::error::SavedResult;
 use crate::network::SavedNetwork;
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
@@ -26,7 +27,8 @@ pub enum KadMode {
 }
 
 impl SavedNetwork {
-    pub(crate) async fn on_handle_cmd(&mut self, cmd: SavedNetworkCommand) {
+    pub(crate) async fn on_handle_cmd(&mut self, cmd: SavedNetworkCommand) -> SavedResult<()> {
+        println!("Received a command: {:?}", cmd);
         match cmd {
             SavedNetworkCommand::SetMdnsEnabled(enabled) => {
                 self.set_mdns_enabled(enabled).await;
@@ -43,7 +45,7 @@ impl SavedNetwork {
             }
             SavedNetworkCommand::KadBootstrap => {
                 if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
-                    let _ = kad.bootstrap();
+                    kad.bootstrap()?;
                 } else {
                     eprintln!("kad bootstrap requested but Kademlia is disabled");
                 }
@@ -61,5 +63,6 @@ impl SavedNetwork {
                 }
             }
         }
+        Ok(())
     }
 }

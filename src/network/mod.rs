@@ -1,5 +1,5 @@
-mod cmd;
-mod handle;
+pub(crate) mod cmd;
+pub(crate) mod handle;
 
 use crate::error::SavedResult;
 use crate::network::cmd::{KadMode, SavedNetworkCommand};
@@ -138,10 +138,20 @@ impl SavedNetwork {
             select! {
                 biased;
                 Some(cmd) = self.cmd_rx.recv() => {
-                    self.on_handle_cmd(cmd).await;
+                    match self.on_handle_cmd(cmd).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Error handling command: {}", e);
+                        }
+                    }
                 }
                 event = self.swarm.select_next_some() => {
-                    self.on_swarm_event(event).await;
+                    match self.on_swarm_event(event).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Error handling swarm event: {}", e);
+                        }
+                    }
                 }
                 _ = handle_shutdown_signals() => {
                     println!("Received shutdown signal.");
@@ -232,13 +242,29 @@ impl SavedNetwork {
                     .clone()
                     .with(Protocol::P2p(*self.swarm.local_peer_id()));
                 println!("Listening on {p2p_addr}");
-                let _ = self
-                    .events_tx
-                    .send(SavedNetworkEvent::ListeningOn { addr: p2p_addr });
+                self.events_tx
+                    .send(SavedNetworkEvent::ListeningOn { addr: p2p_addr })?;
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Ping(ev)) => {
-                // Basic visibility that the node is alive and pinging.
-                println!("Ping event: peer={} result={:?}", ev.peer, ev.result);
+                // Try to find the connection address from our view
+                if let Some(peer_info) = self.view.peers.get(&ev.peer) {
+                    if let Some(addr) = peer_info.connections.get(&ev.connection) {
+                        println!(
+                            "🏓 Ping event: peer={} via {} -> {:?}",
+                            ev.peer, addr, ev.result
+                        );
+                    } else {
+                        eprintln!(
+                            "🏓 [!] Ping event: peer={} (connection {:?}, addr unknown) -> {:?}",
+                            ev.peer, ev.connection, ev.result
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "🏓 [!] Ping event: unknown peer {} (connection {:?}) -> {:?}",
+                        ev.peer, ev.connection, ev.result
+                    );
+                }
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 // New peers discovered via mDNS - automatically connect to them
@@ -266,10 +292,10 @@ impl SavedNetwork {
                     peer_id, endpoint
                 );
                 self.view.add_connection(peer_id, connection_id, &endpoint);
-                let _ = self.events_tx.send(SavedNetworkEvent::Connected {
+                self.events_tx.send(SavedNetworkEvent::Connected {
                     peer_id,
                     connection_id,
-                });
+                })?;
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -279,10 +305,10 @@ impl SavedNetwork {
             } => {
                 println!("❌ Connection closed with peer: {} - {:?}", peer_id, cause);
                 self.view.remove_connection(&peer_id, connection_id);
-                let _ = self.events_tx.send(SavedNetworkEvent::Disconnected {
+                self.events_tx.send(SavedNetworkEvent::Disconnected {
                     peer_id,
                     connection_id,
-                });
+                })?;
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
                 println!("🌐 Peer {peer_id} new external addr: {address}");
