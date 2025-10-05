@@ -1,3 +1,4 @@
+use crate::network;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -14,6 +15,10 @@ pub enum SavedError {
     Infallible(#[from] std::convert::Infallible),
     #[error("Join Error: {0}")]
     Join(#[from] tokio::task::JoinError),
+    #[error("tokio::sync::broadcast::error::SendError<network::SavedNetworkEvent>: {0}")]
+    TokioBroadcastNetEvent(
+        #[from] tokio::sync::broadcast::error::SendError<network::SavedNetworkEvent>,
+    ),
 }
 
 pub type SavedResult<T> = Result<T, SavedError>;

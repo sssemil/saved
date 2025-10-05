@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Default)]
 pub struct NetworkView {
-    pub peers: HashMap<PeerId, PeerInfo>,
+    pub peers: HashMap<PeerId, PeerInfoExt>,
 }
 
 #[derive(Debug, Default)]
-pub struct PeerInfo {
+pub struct PeerInfoExt {
     /// Known or advertised addresses for this peer (kept exactly as observed, including /p2p/...).
     pub addresses: HashSet<Multiaddr>,
     /// Active connections keyed by ConnectionId -> remote addr (kept exactly as observed).

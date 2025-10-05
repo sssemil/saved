@@ -1,4 +1,9 @@
+mod cmd;
+mod handle;
+
 use crate::error::SavedResult;
+use crate::network::cmd::{KadMode, SavedNetworkCommand};
+use crate::network::handle::SavedHandle;
 use crate::signals::handle_shutdown_signals;
 use crate::view::NetworkView;
 use futures::StreamExt;
@@ -6,7 +11,7 @@ use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
-use libp2p::{Multiaddr, PeerId, Swarm, mdns, ping};
+use libp2p::{Multiaddr, PeerId, Swarm, identify, kad, mdns, ping};
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -19,44 +24,12 @@ pub struct SavedNetwork {
     cmd_rx: mpsc::Receiver<SavedNetworkCommand>,
 }
 
-pub struct SavedHandle {
-    pub events_rx: broadcast::Receiver<SavedNetworkEvent>,
-    cmd_tx: mpsc::Sender<SavedNetworkCommand>,
-    task_handle: Option<JoinHandle<()>>,
-}
-
-impl SavedHandle {
-    pub async fn join(mut self) {
-        if let Some(handle) = self.task_handle.take() {
-            // Await consumes the JoinHandle; after take() we own it.
-            let _ = handle.await;
-        }
-    }
-
-    pub async fn set_mdns_enabled(
-        &self,
-        enabled: bool,
-    ) -> Result<(), mpsc::error::SendError<SavedNetworkCommand>> {
-        self.cmd_tx
-            .send(SavedNetworkCommand::SetMdnsEnabled(enabled))
-            .await
-    }
-}
-
-impl Drop for SavedHandle {
-    fn drop(&mut self) {
-        if let Some(handle) = self.task_handle.take() {
-            println!("Dropping save handle...");
-            handle.abort();
-            println!("Dropped save handle!");
-        }
-    }
-}
-
 #[derive(NetworkBehaviour)]
 struct SavedBehaviour {
     ping: ping::Behaviour,
     mdns: Toggle<mdns::tokio::Behaviour>,
+    kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
+    identify: identify::Behaviour,
 }
 
 #[derive(Debug, Clone)]
@@ -69,11 +42,27 @@ pub enum SavedNetworkEvent {
         peer_id: PeerId,
         connection_id: ConnectionId,
     },
+    KadFoundPeer {
+        target: PeerId,
+        addresses: Vec<Multiaddr>,
+    },
+    ListeningOn {
+        addr: Multiaddr,
+    },
 }
 
-#[derive(Debug, Clone)]
-pub enum SavedNetworkCommand {
-    SetMdnsEnabled(bool),
+fn should_skip_for_dial(addr: &Multiaddr) -> bool {
+    // Skip IPv6 link-local without zone (needs %iface)
+    let mut has_ip6_ll = false;
+    let mut has_zone = false;
+    for p in addr.iter() {
+        match p {
+            Protocol::Ip6(ip) if ip.is_unicast_link_local() => has_ip6_ll = true,
+            Protocol::Ip6zone(_) => has_zone = true,
+            _ => {}
+        }
+    }
+    has_ip6_ll && !has_zone
 }
 
 impl SavedNetwork {
@@ -83,9 +72,14 @@ impl SavedNetwork {
 
         let behaviour = SavedBehaviour {
             ping: ping::Behaviour::new(
-                ping::Config::default().with_interval(Duration::from_secs(1)),
+                ping::Config::default().with_interval(Duration::from_secs(15)),
             ),
             mdns: Toggle::from(None),
+            kad: Toggle::from(None),
+            identify: identify::Behaviour::new(
+                identify::Config::new("/saved/0.1.0".into(), keypair.public())
+                    .with_push_listen_addr_updates(true),
+            ),
         };
 
         let mut swarm: Swarm<SavedBehaviour> =
@@ -97,7 +91,7 @@ impl SavedNetwork {
                     libp2p::yamux::Config::default,
                 )?
                 .with_behaviour(|_| behaviour)?
-                .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(3)))
+                .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
                 .build();
 
         // Listen on all interfaces (both IPv4 and IPv6) on ephemeral TCP ports.
@@ -118,9 +112,11 @@ impl SavedNetwork {
         };
 
         net.set_mdns_enabled(true).await;
+        net.set_kad_enabled(false, KadMode::Auto).await;
 
         let net_run_handle = net.run().await;
         let handle = SavedHandle {
+            id: peer_id,
             events_rx: events_tx.subscribe(),
             cmd_tx,
             task_handle: Some(net_run_handle),
@@ -173,15 +169,62 @@ impl SavedNetwork {
         }
     }
 
-    async fn on_handle_cmd(&mut self, cmd: SavedNetworkCommand) {
-        match cmd {
-            SavedNetworkCommand::SetMdnsEnabled(enabled) => {
-                self.set_mdns_enabled(enabled).await;
+    async fn set_kad_enabled(&mut self, enabled: bool, mode: KadMode) {
+        let local = *self.swarm.local_peer_id();
+        let kad_toggle = &mut self.swarm.behaviour_mut().kad;
+        if enabled {
+            if kad_toggle.as_ref().is_none() {
+                let k = kad::Behaviour::with_config(
+                    local,
+                    kad::store::MemoryStore::new(local),
+                    kad::Config::default(),
+                );
+                *kad_toggle = Toggle::from(Some(k));
+            }
+            let mode = match mode {
+                KadMode::Client => Some(kad::Mode::Client),
+                KadMode::Server => Some(kad::Mode::Server),
+                KadMode::Auto => None,
+            };
+            if let Some(x) = kad_toggle.as_mut() {
+                x.set_mode(mode)
+            }
+        } else if kad_toggle.as_ref().is_some() {
+            // Disable by replacing with None
+            *kad_toggle = Toggle::from(None);
+        }
+    }
+
+    async fn on_add_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        if should_skip_for_dial(&addr) {
+            return;
+        }
+        self.view.add_address(peer_id, addr.clone());
+        if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+            kad.add_address(&peer_id, addr.clone());
+        }
+
+        if !self.view.is_connected_over(&peer_id, &addr) {
+            // Attempt to dial the discovered peer
+            match self.swarm.dial(addr) {
+                Ok(()) => {
+                    println!("Attempting to connect to discovered peer: {}", peer_id);
+                }
+                Err(e) => {
+                    println!("Failed to dial discovered peer {}: {}", peer_id, e);
+                }
             }
         }
     }
 
-    async fn on_swarm_event(&mut self, event: SwarmEvent<SavedBehaviourEvent>) {
+    async fn on_remove_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        self.view.remove_address(&peer_id, &addr);
+        if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+            kad.remove_address(&peer_id, &addr);
+        }
+    }
+
+    async fn on_swarm_event(&mut self, event: SwarmEvent<SavedBehaviourEvent>) -> SavedResult<()> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 // Also print a p2p multiaddr with our PeerId for easy copy-paste.
@@ -189,6 +232,9 @@ impl SavedNetwork {
                     .clone()
                     .with(Protocol::P2p(*self.swarm.local_peer_id()));
                 println!("Listening on {p2p_addr}");
+                let _ = self
+                    .events_tx
+                    .send(SavedNetworkEvent::ListeningOn { addr: p2p_addr });
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Ping(ev)) => {
                 // Basic visibility that the node is alive and pinging.
@@ -199,30 +245,14 @@ impl SavedNetwork {
                 for (peer_id, multiaddr) in list {
                     println!("mDNS discovered peer: {peer_id} at {multiaddr}");
 
-                    self.view.add_address(peer_id, multiaddr.clone());
-
-                    if self.view.is_connected_over(&peer_id, &multiaddr) {
-                        println!(
-                            "mDNS discovered an already connected peer address, skipping: {peer_id} -> {multiaddr}"
-                        );
-                    } else {
-                        // Attempt to dial the discovered peer
-                        match self.swarm.dial(multiaddr) {
-                            Ok(()) => {
-                                println!("Attempting to connect to discovered peer: {}", peer_id);
-                            }
-                            Err(e) => {
-                                println!("Failed to dial discovered peer {}: {}", peer_id, e);
-                            }
-                        }
-                    }
+                    self.on_add_address(peer_id, multiaddr.clone()).await;
                 }
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                 // Peers that are no longer available
                 for (peer_id, multiaddr) in list {
                     println!("mDNS peer expired: {} at {}", peer_id, multiaddr);
-                    self.view.remove_address(&peer_id, &multiaddr);
+                    self.on_remove_address(peer_id, multiaddr).await;
                 }
             }
             SwarmEvent::ConnectionEstablished {
@@ -256,15 +286,48 @@ impl SavedNetwork {
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
                 println!("🌐 Peer {peer_id} new external addr: {address}");
-                self.view.add_address(peer_id, address);
+                self.on_add_address(peer_id, address.clone()).await;
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 println!("⚠️  Failed to connect to peer: {:?} - {:?}", peer_id, error);
+            }
+            SwarmEvent::Behaviour(SavedBehaviourEvent::Kad(
+                kad::Event::OutboundQueryProgressed {
+                    result: kad::QueryResult::GetClosestPeers(result),
+                    ..
+                },
+            )) => match result {
+                Ok(ok) => {
+                    for p in &ok.peers {
+                        println!("DHT Found Peer: {:?}", p);
+                        self.events_tx.send(SavedNetworkEvent::KadFoundPeer {
+                            target: p.peer_id,
+                            addresses: p.addrs.clone(),
+                        })?;
+                        for addr in &p.addrs {
+                            self.on_add_address(p.peer_id, addr.clone()).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("kad GetClosestPeers error: {e}");
+                }
+            },
+            SwarmEvent::Behaviour(SavedBehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
+                for addr in info.listen_addrs {
+                    // add to your view/Kad/address book and maybe dial
+                    self.on_add_address(peer_id, addr).await;
+                }
             }
             _ => {
                 println!("Unhandled event: {:?}", event);
             }
         }
+        Ok(())
     }
 }
 
@@ -273,12 +336,10 @@ mod tests {
     use super::*;
     use crate::keygen::keypair_from_seed;
 
-    async fn make_net(seed: &str) -> (Keypair, SavedHandle, PeerId) {
+    async fn make_net(seed: &str) -> SavedHandle {
         let keypair1 = keypair_from_seed(seed);
-        let network_handle1 = SavedNetwork::new(keypair1.clone()).await.unwrap();
-        let id1 = keypair1.public().to_peer_id();
 
-        (keypair1, network_handle1, id1)
+        SavedNetwork::new(keypair1.clone()).await.unwrap()
     }
 
     // Helper that waits until we see a Connected event for `target`.
@@ -295,14 +356,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_nodes_mdns() {
-        let (_keypair1, mut network_handle1, id1) = make_net("1").await;
-        let (_keypair2, mut network_handle2, id2) = make_net("2").await;
+        let mut network_handle1 = make_net("1").await;
+        let mut network_handle2 = make_net("2").await;
 
         // Require both directions to observe a connection within 5 seconds.
         let both = async {
             tokio::join!(
-                wait_for_connected(&mut network_handle1.events_rx, id2),
-                wait_for_connected(&mut network_handle2.events_rx, id1)
+                wait_for_connected(&mut network_handle1.events_rx, network_handle2.id),
+                wait_for_connected(&mut network_handle2.events_rx, network_handle1.id),
             );
         };
 
@@ -316,16 +377,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_nodes_no_mdns() {
-        let (_keypair1, mut network_handle1, id1) = make_net("1").await;
+        let mut network_handle1 = make_net("1").await;
         network_handle1.set_mdns_enabled(false).await.unwrap();
-        let (_keypair2, mut network_handle2, id2) = make_net("2").await;
+        let mut network_handle2 = make_net("2").await;
         network_handle2.set_mdns_enabled(false).await.unwrap();
 
         // Require both directions to observe a connection within 5 seconds.
         let both = async {
             tokio::join!(
-                wait_for_connected(&mut network_handle1.events_rx, id2),
-                wait_for_connected(&mut network_handle2.events_rx, id1)
+                wait_for_connected(&mut network_handle1.events_rx, network_handle1.id),
+                wait_for_connected(&mut network_handle2.events_rx, network_handle2.id),
             );
         };
 
@@ -335,5 +396,73 @@ mod tests {
             res.is_err(),
             "nodes established a connection within 5 seconds, but should have been able to"
         );
+    }
+
+    #[tokio::test]
+    async fn test_three_nodes_kad_peer_discovery_connects_via_middle() {
+        // Spawn three nodes
+        let mut a = make_net("A").await;
+        let mut m = make_net("M").await;
+        let mut c = make_net("C").await;
+
+        // Disable mDNS for deterministic topology
+        a.set_mdns_enabled(false).await.unwrap();
+        m.set_mdns_enabled(false).await.unwrap();
+        c.set_mdns_enabled(false).await.unwrap();
+
+        // Enable Kad (server so they keep tables)
+        a.set_kad_enabled(true, KadMode::Server).await.unwrap();
+        m.set_kad_enabled(true, KadMode::Server).await.unwrap();
+        c.set_kad_enabled(true, KadMode::Server).await.unwrap();
+
+        // Wait for M to announce a p2p listening address
+        let m_addr = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match m.events_rx.recv().await {
+                    Ok(SavedNetworkEvent::ListeningOn { addr }) => break addr,
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(e) => panic!("m events channel closed unexpectedly: {e:?}"),
+                }
+            }
+        })
+        .await
+        .expect("middle node didn't start listening in time");
+
+        // A and C connect to M using that addr
+        a.dial_peer(m_addr.clone()).await.unwrap();
+        c.dial_peer(m_addr.clone()).await.unwrap();
+
+        // Wait for both A↔M and C↔M connections
+        let am = async {
+            tokio::join!(
+                wait_for_connected(&mut a.events_rx, m.id),
+                wait_for_connected(&mut m.events_rx, a.id),
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(5), am)
+            .await
+            .unwrap();
+        let cm = async {
+            tokio::join!(
+                wait_for_connected(&mut c.events_rx, m.id),
+                wait_for_connected(&mut m.events_rx, c.id),
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(5), cm)
+            .await
+            .unwrap();
+
+        // Ask DHT on A to find C (routes via M); your Kad handler will
+        // learn addrs and auto-dial via `on_add_address`.
+        a.kad_find_peer(c.id).await.unwrap();
+
+        // Finally, A should connect directly to C
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_for_connected(&mut a.events_rx, c.id),
+        )
+        .await
+        .expect("A did not connect to C via DHT discovery in time");
     }
 }

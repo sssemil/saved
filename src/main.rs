@@ -1,14 +1,13 @@
-mod env;
 mod error;
 mod keygen;
 mod network;
 mod signals;
 mod view;
 
-use crate::env::get_env_default;
 use crate::error::SavedResult;
 use crate::keygen::keypair_from_seed;
 use crate::network::SavedNetwork;
+use env_helpers::get_env_default;
 
 #[tokio::main]
 async fn main() -> SavedResult<()> {
