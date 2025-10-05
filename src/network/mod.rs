@@ -11,7 +11,7 @@ use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
-use libp2p::{Multiaddr, PeerId, Swarm, identify, kad, mdns, ping};
+use libp2p::{Multiaddr, PeerId, Swarm, autonat, dcutr, identify, kad, mdns, ping, relay};
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -30,6 +30,9 @@ struct SavedBehaviour {
     mdns: Toggle<mdns::tokio::Behaviour>,
     kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
     identify: identify::Behaviour,
+    autonat: autonat::Behaviour,
+    dcutr: dcutr::Behaviour,
+    relay: relay::client::Behaviour,
 }
 
 #[derive(Debug, Clone)]
@@ -70,29 +73,37 @@ impl SavedNetwork {
         let peer_id = keypair.public().to_peer_id();
         println!("Generated PeerId: {}", peer_id);
 
-        let behaviour = SavedBehaviour {
-            ping: ping::Behaviour::new(
-                ping::Config::default().with_interval(Duration::from_secs(15)),
-            ),
-            mdns: Toggle::from(None),
-            kad: Toggle::from(None),
-            identify: identify::Behaviour::new(
-                identify::Config::new("/saved/0.1.0".into(), keypair.public())
-                    .with_push_listen_addr_updates(true),
-            ),
-        };
-
-        let mut swarm: Swarm<SavedBehaviour> =
-            libp2p::SwarmBuilder::with_existing_identity(keypair)
-                .with_tokio()
-                .with_tcp(
-                    libp2p::tcp::Config::default(),
-                    libp2p::noise::Config::new,
-                    libp2p::yamux::Config::default,
-                )?
-                .with_behaviour(|_| behaviour)?
-                .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
-                .build();
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair.clone())
+            .with_tokio()
+            .with_tcp(
+                libp2p::tcp::Config::default(),
+                libp2p::noise::Config::new,
+                libp2p::yamux::Config::default,
+            )?
+            .with_quic()
+            .with_dns()?
+            .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)?
+            .with_behaviour(|_keypair, relay_client| SavedBehaviour {
+                ping: ping::Behaviour::new(
+                    ping::Config::default().with_interval(Duration::from_secs(15)),
+                ),
+                mdns: Toggle::from(None),
+                kad: Toggle::from(None),
+                identify: identify::Behaviour::new(
+                    identify::Config::new("/saved/0.1.0".into(), keypair.public())
+                        .with_push_listen_addr_updates(true),
+                ),
+                autonat: autonat::Behaviour::new(
+                    peer_id,
+                    autonat::Config {
+                        only_global_ips: true,
+                        ..Default::default()
+                    },
+                ),
+                dcutr: dcutr::Behaviour::new(peer_id),
+                relay: relay_client,
+            })?
+            .build();
 
         // Listen on all interfaces (both IPv4 and IPv6) on ephemeral TCP ports.
         let listen_addr_v4: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse()?;
@@ -344,6 +355,7 @@ impl SavedNetwork {
                 info,
                 ..
             })) => {
+                self.view.add_protocols(peer_id, info.protocols);
                 for addr in info.listen_addrs {
                     // add to your view/Kad/address book and maybe dial
                     self.on_add_address(peer_id, addr).await;

@@ -55,6 +55,8 @@ async fn main() -> SavedResult<()> {
     })
     .await;
 
+    sleep(Duration::from_secs(10)).await;
+
     network_handle.join().await?;
 
     Ok(())

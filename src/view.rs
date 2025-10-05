@@ -1,6 +1,6 @@
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::ConnectionId;
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId, StreamProtocol};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Default)]
@@ -16,6 +16,7 @@ pub struct PeerInfoExt {
     pub connections: HashMap<ConnectionId, Multiaddr>,
     /// How many active connections currently use a given remote addr.
     active_addrs: HashMap<Multiaddr, u32>,
+    protocols: Vec<StreamProtocol>,
 }
 
 impl NetworkView {
@@ -96,6 +97,14 @@ impl NetworkView {
         if remove {
             self.peers.remove(peer_id);
         }
+    }
+
+    pub fn add_protocols(&mut self, peer_id: PeerId, mut protocols: Vec<StreamProtocol>) {
+        self.peers
+            .entry(peer_id)
+            .or_default()
+            .protocols
+            .append(&mut protocols);
     }
 }
 
