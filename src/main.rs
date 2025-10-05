@@ -9,7 +9,6 @@ use crate::env::get_env_default;
 use crate::error::SavedResult;
 use crate::keygen::keypair_from_seed;
 use crate::network::SavedNetwork;
-use tokio::join;
 
 #[tokio::main]
 async fn main() -> SavedResult<()> {
@@ -21,12 +20,8 @@ async fn main() -> SavedResult<()> {
     // Generate keypair from seed
     let keypair = keypair_from_seed(&seed_phrase);
 
-    let network = SavedNetwork::new(keypair)?;
-
-    println!("Starting Swarm server...");
-    let h = network.run().await;
-    let (r,) = join!(h);
-    r?;
+    let network_handle = SavedNetwork::new(keypair).await?;
+    network_handle.join().await;
 
     Ok(())
 }

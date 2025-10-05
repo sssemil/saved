@@ -72,7 +72,6 @@ impl NetworkView {
         }
     }
 
-    /// Exact match: are we connected over this precise multiaddr (including any /p2p/... segments)?
     pub fn is_connected_over(&self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
         self.peers
             .get(peer_id)
@@ -100,7 +99,6 @@ impl NetworkView {
     }
 }
 
-// Refcount helpers (unchanged)
 fn inc_addr_ref(map: &mut HashMap<Multiaddr, u32>, addr: Multiaddr) {
     *map.entry(addr).or_insert(0) += 1;
 }
@@ -175,7 +173,7 @@ mod tests {
 
         view.remove_address(&peer, &a);
         assert!(
-            view.peers.get(&peer).is_none(),
+            !view.peers.contains_key(&peer),
             "peer entry pruned when empty"
         );
     }
@@ -230,7 +228,7 @@ mod tests {
         view.remove_connection(&peer, ConnectionId::new_unchecked(10));
         assert!(!view.is_connected_over(&peer, &remote));
         assert!(
-            view.peers.get(&peer).is_none(),
+            !view.peers.contains_key(&peer),
             "peer pruned after last connection removed"
         );
     }
