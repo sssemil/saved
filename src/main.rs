@@ -6,8 +6,7 @@ mod view;
 
 use crate::error::SavedResult;
 use crate::keygen::keypair_from_seed;
-use crate::network::SavedNetwork;
-use crate::network::cmd::KadMode;
+use crate::network::{KadMode, SavedNetwork};
 use env_helpers::get_env_default;
 use libp2p::Multiaddr;
 use std::time::Duration;
@@ -41,7 +40,7 @@ async fn main() -> SavedResult<()> {
     .map(|s| s.parse().expect("bad multiaddr"))
     .collect();
     for bootstrap_addr in boostrap_addrs {
-        network_handle.dial_peer(bootstrap_addr).await?;
+        network_handle.dial(bootstrap_addr).await?;
     }
     sleep(Duration::from_secs(2)).await;
     network_handle.kad_bootstrap().await?;

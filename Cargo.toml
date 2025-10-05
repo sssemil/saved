@@ -16,3 +16,4 @@ rand_chacha = "0.9.0"
 rand_core = "0.6.4"
 dashmap = "7.0.0-rc2"
 env_helpers = '0.1.0'
+async-trait = "0.1.89"

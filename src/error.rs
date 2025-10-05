@@ -1,5 +1,7 @@
 use crate::network;
+use libp2p::Multiaddr;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Error)]
 pub enum SavedError {
@@ -19,12 +21,18 @@ pub enum SavedError {
     TokioBroadcastNetEvent(
         #[from] tokio::sync::broadcast::error::SendError<network::SavedNetworkEvent>,
     ),
-    #[error("tokio::sync::mpsc::error::SendError<network::cmd::SavedNetworkCommand>: {0}")]
-    TokioMpscSendNetCmd(
-        #[from] tokio::sync::mpsc::error::SendError<network::cmd::SavedNetworkCommand>,
-    ),
     #[error("Kad NoKnownPeers: {0}")]
     KadNoKnownPeers(#[from] libp2p::kad::NoKnownPeers),
+    #[error("Kad Disabled")]
+    KadDisabled,
+    #[error("dial addr missing /p2p/<peerid>: {0}")]
+    DialAddrMissingP2p(Multiaddr),
+    #[error("DialError: {0}")]
+    Dial(#[from] libp2p::swarm::DialError),
+    #[error("tokio::sync::mpsc::error::SendError<network::rpc::SavedNetworkRpc>: {0}")]
+    TokioMpscSendNetRpc(#[from] mpsc::error::SendError<network::api::SavedNetworkRpc>),
+    #[error("oneshot canceled while awaiting RPC reply for {rpc}")]
+    OneshotCanceled { rpc: &'static str },
 }
 
 pub type SavedResult<T> = Result<T, SavedError>;

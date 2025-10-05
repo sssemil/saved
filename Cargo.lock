@@ -2699,6 +2699,7 @@ dependencies = [
 name = "saved-v3"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dashmap",
  "env_helpers",
  "futures",

@@ -1,8 +1,9 @@
-pub(crate) mod cmd;
+pub(crate) mod api;
 pub(crate) mod handle;
+mod rpc_macros;
 
-use crate::error::SavedResult;
-use crate::network::cmd::{KadMode, SavedNetworkCommand};
+use crate::error::{SavedError, SavedResult};
+use crate::network::api::{SavedNetworkApi, SavedNetworkRpc};
 use crate::network::handle::SavedHandle;
 use crate::signals::handle_shutdown_signals;
 use crate::view::NetworkView;
@@ -21,7 +22,7 @@ pub struct SavedNetwork {
     swarm: Swarm<SavedBehaviour>,
     view: NetworkView,
     events_tx: broadcast::Sender<SavedNetworkEvent>,
-    cmd_rx: mpsc::Receiver<SavedNetworkCommand>,
+    cmd_rx: mpsc::Receiver<SavedNetworkRpc>,
 }
 
 #[derive(NetworkBehaviour)]
@@ -52,6 +53,20 @@ pub enum SavedNetworkEvent {
     ListeningOn {
         addr: Multiaddr,
     },
+}
+
+/// Set the [`KadMode`] in which we should operate.
+///
+/// With [`KadMode::Auto`], we are in [`Mode::Client`] and will swap into [`Mode::Server`] as
+/// soon as we have a confirmed, external address via [`FromSwarm::ExternalAddrConfirmed`].
+///
+/// Setting a mode to [`KadMode::Auto`] or [`KadMode::Server`] disables this automatic
+/// behaviour and unconditionally operates in the specified mode.
+#[derive(Debug, Clone)]
+pub enum KadMode {
+    Auto,
+    Client,
+    Server,
 }
 
 fn should_skip_for_dial(addr: &Multiaddr) -> bool {
@@ -122,8 +137,8 @@ impl SavedNetwork {
             cmd_rx,
         };
 
-        net.set_mdns_enabled(true).await;
-        net.set_kad_enabled(false, KadMode::Auto).await;
+        net.set_mdns_enabled(true).await?;
+        net.set_kad_enabled(false, KadMode::Auto).await?;
 
         let net_run_handle = net.run().await;
         let handle = SavedHandle {
@@ -149,11 +164,8 @@ impl SavedNetwork {
             select! {
                 biased;
                 Some(cmd) = self.cmd_rx.recv() => {
-                    match self.on_handle_cmd(cmd).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            eprintln!("Error handling command: {}", e);
-                        }
+                    if let Err(e) = self.dispatch_rpc(cmd).await {
+                        eprintln!("RPC error: {}", e);
                     }
                 }
                 event = self.swarm.select_next_some() => {
@@ -168,51 +180,6 @@ impl SavedNetwork {
                     println!("Received shutdown signal.");
                 }
             }
-        }
-    }
-
-    async fn set_mdns_enabled(&mut self, enabled: bool) {
-        let local = *self.swarm.local_peer_id();
-        let mdns_toggle = &mut self.swarm.behaviour_mut().mdns;
-        if enabled {
-            if mdns_toggle.as_ref().is_none() {
-                match mdns::tokio::Behaviour::new(mdns::Config::default(), local) {
-                    Ok(b) => {
-                        // Enable by replacing the Toggle with Some(behaviour)
-                        *mdns_toggle = Toggle::from(Some(b));
-                    }
-                    Err(e) => eprintln!("failed to enable mDNS: {e}"),
-                }
-            }
-        } else if mdns_toggle.as_ref().is_some() {
-            // Disable by replacing with None
-            *mdns_toggle = Toggle::from(None);
-        }
-    }
-
-    async fn set_kad_enabled(&mut self, enabled: bool, mode: KadMode) {
-        let local = *self.swarm.local_peer_id();
-        let kad_toggle = &mut self.swarm.behaviour_mut().kad;
-        if enabled {
-            if kad_toggle.as_ref().is_none() {
-                let k = kad::Behaviour::with_config(
-                    local,
-                    kad::store::MemoryStore::new(local),
-                    kad::Config::default(),
-                );
-                *kad_toggle = Toggle::from(Some(k));
-            }
-            let mode = match mode {
-                KadMode::Client => Some(kad::Mode::Client),
-                KadMode::Server => Some(kad::Mode::Server),
-                KadMode::Auto => None,
-            };
-            if let Some(x) = kad_toggle.as_mut() {
-                x.set_mode(mode)
-            }
-        } else if kad_toggle.as_ref().is_some() {
-            // Disable by replacing with None
-            *kad_toggle = Toggle::from(None);
         }
     }
 
@@ -369,6 +336,86 @@ impl SavedNetwork {
     }
 }
 
+impl SavedNetworkApi for SavedNetwork {
+    async fn set_mdns_enabled(&mut self, enabled: bool) -> SavedResult<()> {
+        let local = *self.swarm.local_peer_id();
+        let mdns_toggle = &mut self.swarm.behaviour_mut().mdns;
+        if enabled {
+            if mdns_toggle.as_ref().is_none() {
+                match mdns::tokio::Behaviour::new(mdns::Config::default(), local) {
+                    Ok(b) => {
+                        // Enable by replacing the Toggle with Some(behaviour)
+                        *mdns_toggle = Toggle::from(Some(b));
+                    }
+                    Err(e) => {
+                        eprintln!("failed to enable mDNS: {e}");
+                        return Err(e.into());
+                    }
+                }
+            }
+        } else if mdns_toggle.as_ref().is_some() {
+            // Disable by replacing with None
+            *mdns_toggle = Toggle::from(None);
+        }
+        Ok(())
+    }
+
+    async fn set_kad_enabled(&mut self, enabled: bool, mode: KadMode) -> SavedResult<()> {
+        let local = *self.swarm.local_peer_id();
+        let kad_toggle = &mut self.swarm.behaviour_mut().kad;
+        if enabled {
+            if kad_toggle.as_ref().is_none() {
+                let k = kad::Behaviour::with_config(
+                    local,
+                    kad::store::MemoryStore::new(local),
+                    kad::Config::default(),
+                );
+                *kad_toggle = Toggle::from(Some(k));
+            }
+            let mode = match mode {
+                KadMode::Client => Some(kad::Mode::Client),
+                KadMode::Server => Some(kad::Mode::Server),
+                KadMode::Auto => None,
+            };
+            if let Some(x) = kad_toggle.as_mut() {
+                x.set_mode(mode)
+            }
+        } else if kad_toggle.as_ref().is_some() {
+            // Disable by replacing with None
+            *kad_toggle = Toggle::from(None);
+        }
+        Ok(())
+    }
+
+    async fn kad_find_peer(&mut self, target: PeerId) -> SavedResult<()> {
+        if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+            kad.get_closest_peers(target);
+            Ok(())
+        } else {
+            Err(SavedError::KadDisabled)
+        }
+    }
+
+    async fn kad_bootstrap(&mut self) -> SavedResult<()> {
+        if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+            kad.bootstrap()?;
+            Ok(())
+        } else {
+            Err(SavedError::KadDisabled)
+        }
+    }
+
+    async fn dial(&mut self, addr: Multiaddr) -> SavedResult<()> {
+        // keep your guardrails
+        let has_p2p = addr.iter().any(|p| matches!(p, Protocol::P2p(_)));
+        if !has_p2p {
+            return Err(SavedError::DialAddrMissingP2p(addr));
+        }
+        self.swarm.dial(addr)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,8 +515,8 @@ mod tests {
         .expect("middle node didn't start listening in time");
 
         // A and C connect to M using that addr
-        a.dial_peer(m_addr.clone()).await.unwrap();
-        c.dial_peer(m_addr.clone()).await.unwrap();
+        a.dial(m_addr.clone()).await.unwrap();
+        c.dial(m_addr.clone()).await.unwrap();
 
         // Wait for both A↔M and C↔M connections
         let am = async {
