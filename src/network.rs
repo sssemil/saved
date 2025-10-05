@@ -4,6 +4,7 @@ use crate::view::NetworkView;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, mdns, ping};
 use std::time::Duration;
@@ -32,11 +33,13 @@ impl SavedHandle {
         }
     }
 
-    pub async fn dial(
+    pub async fn set_mdns_enabled(
         &self,
-        addr: Multiaddr,
+        enabled: bool,
     ) -> Result<(), mpsc::error::SendError<SavedNetworkCommand>> {
-        self.cmd_tx.send(SavedNetworkCommand::Dial(addr)).await
+        self.cmd_tx
+            .send(SavedNetworkCommand::SetMdnsEnabled(enabled))
+            .await
     }
 }
 
@@ -53,7 +56,7 @@ impl Drop for SavedHandle {
 #[derive(NetworkBehaviour)]
 struct SavedBehaviour {
     ping: ping::Behaviour,
-    mdns: mdns::tokio::Behaviour,
+    mdns: Toggle<mdns::tokio::Behaviour>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +73,7 @@ pub enum SavedNetworkEvent {
 
 #[derive(Debug, Clone)]
 pub enum SavedNetworkCommand {
-    Dial(Multiaddr),
+    SetMdnsEnabled(bool),
 }
 
 impl SavedNetwork {
@@ -82,7 +85,7 @@ impl SavedNetwork {
             ping: ping::Behaviour::new(
                 ping::Config::default().with_interval(Duration::from_secs(1)),
             ),
-            mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?,
+            mdns: Toggle::from(None),
         };
 
         let mut swarm: Swarm<SavedBehaviour> =
@@ -107,12 +110,15 @@ impl SavedNetwork {
         let (events_tx, _rx) = broadcast::channel(64);
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-        let net = SavedNetwork {
+        let mut net = SavedNetwork {
             swarm,
             view: Default::default(),
             events_tx: events_tx.clone(),
             cmd_rx,
         };
+
+        net.set_mdns_enabled(true).await;
+
         let net_run_handle = net.run().await;
         let handle = SavedHandle {
             events_rx: events_tx.subscribe(),
@@ -136,13 +142,7 @@ impl SavedNetwork {
             select! {
                 biased;
                 Some(cmd) = self.cmd_rx.recv() => {
-                    match cmd {
-                        SavedNetworkCommand::Dial(addr) => {
-                            if let Err(e) = self.swarm.dial(addr) {
-                                eprintln!("dial error: {e}");
-                            }
-                        }
-                    }
+                    self.on_handle_cmd(cmd).await;
                 }
                 event = self.swarm.select_next_some() => {
                     self.on_swarm_event(event).await;
@@ -150,6 +150,33 @@ impl SavedNetwork {
                 _ = handle_shutdown_signals() => {
                     println!("Received shutdown signal.");
                 }
+            }
+        }
+    }
+
+    async fn set_mdns_enabled(&mut self, enabled: bool) {
+        let local = *self.swarm.local_peer_id();
+        let mdns_toggle = &mut self.swarm.behaviour_mut().mdns;
+        if enabled {
+            if mdns_toggle.as_ref().is_none() {
+                match mdns::tokio::Behaviour::new(mdns::Config::default(), local) {
+                    Ok(b) => {
+                        // Enable by replacing the Toggle with Some(behaviour)
+                        *mdns_toggle = Toggle::from(Some(b));
+                    }
+                    Err(e) => eprintln!("failed to enable mDNS: {e}"),
+                }
+            }
+        } else if mdns_toggle.as_ref().is_some() {
+            // Disable by replacing with None
+            *mdns_toggle = Toggle::from(None);
+        }
+    }
+
+    async fn on_handle_cmd(&mut self, cmd: SavedNetworkCommand) {
+        match cmd {
+            SavedNetworkCommand::SetMdnsEnabled(enabled) => {
+                self.set_mdns_enabled(enabled).await;
             }
         }
     }
@@ -246,50 +273,67 @@ mod tests {
     use super::*;
     use crate::keygen::keypair_from_seed;
 
-    #[tokio::test]
-    async fn test_two_nodes_mdns() {
-        let keypair1 = keypair_from_seed("1");
-        let mut network_handle1 = SavedNetwork::new(keypair1.clone()).await.unwrap();
-
-        let keypair2 = keypair_from_seed("2");
-        let mut network_handle2 = SavedNetwork::new(keypair2.clone()).await.unwrap();
-
-        // Subscribe BEFORE running so we don't miss early events.
-        let rx1 = &mut network_handle1.events_rx;
-        let rx2 = &mut network_handle2.events_rx;
-
+    async fn make_net(seed: &str) -> (Keypair, SavedHandle, PeerId) {
+        let keypair1 = keypair_from_seed(seed);
+        let network_handle1 = SavedNetwork::new(keypair1.clone()).await.unwrap();
         let id1 = keypair1.public().to_peer_id();
-        let id2 = keypair2.public().to_peer_id();
 
-        // Helper that waits until we see a Connected event for `target`.
-        async fn wait_for_connected(
-            rx: &mut broadcast::Receiver<SavedNetworkEvent>,
-            target: PeerId,
-        ) {
-            loop {
-                match rx.recv().await {
-                    Ok(SavedNetworkEvent::Connected { peer_id, .. }) if peer_id == target => break,
-                    Ok(_) => {} // other events; ignore
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(e) => panic!("event channel closed unexpectedly: {e:?}"),
-                }
+        (keypair1, network_handle1, id1)
+    }
+
+    // Helper that waits until we see a Connected event for `target`.
+    async fn wait_for_connected(rx: &mut broadcast::Receiver<SavedNetworkEvent>, target: PeerId) {
+        loop {
+            match rx.recv().await {
+                Ok(SavedNetworkEvent::Connected { peer_id, .. }) if peer_id == target => break,
+                Ok(_) => {} // other events; ignore
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(e) => panic!("event channel closed unexpectedly: {e:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_two_nodes_mdns() {
+        let (_keypair1, mut network_handle1, id1) = make_net("1").await;
+        let (_keypair2, mut network_handle2, id2) = make_net("2").await;
 
         // Require both directions to observe a connection within 5 seconds.
         let both = async {
-            tokio::join!(wait_for_connected(rx1, id2), wait_for_connected(rx2, id1));
+            tokio::join!(
+                wait_for_connected(&mut network_handle1.events_rx, id2),
+                wait_for_connected(&mut network_handle2.events_rx, id1)
+            );
         };
 
         let res = tokio::time::timeout(Duration::from_secs(5), both).await;
 
-        // Clean up the tasks no matter what, this should abort tasks.
-        drop(network_handle1);
-        drop(network_handle2);
-
         assert!(
             res.is_ok(),
             "nodes did not establish a connection within 5 seconds"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_two_nodes_no_mdns() {
+        let (_keypair1, mut network_handle1, id1) = make_net("1").await;
+        network_handle1.set_mdns_enabled(false).await.unwrap();
+        let (_keypair2, mut network_handle2, id2) = make_net("2").await;
+        network_handle2.set_mdns_enabled(false).await.unwrap();
+
+        // Require both directions to observe a connection within 5 seconds.
+        let both = async {
+            tokio::join!(
+                wait_for_connected(&mut network_handle1.events_rx, id2),
+                wait_for_connected(&mut network_handle2.events_rx, id1)
+            );
+        };
+
+        let res = tokio::time::timeout(Duration::from_secs(5), both).await;
+
+        assert!(
+            res.is_err(),
+            "nodes established a connection within 5 seconds, but should have been able to"
         );
     }
 }
