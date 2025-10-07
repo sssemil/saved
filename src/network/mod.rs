@@ -10,6 +10,7 @@ use crate::view::NetworkView;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
+use libp2p::relay::client::Event::ReservationReqAccepted;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, autonat, dcutr, identify, kad, mdns, ping, relay};
@@ -327,6 +328,40 @@ impl SavedNetwork {
                     // add to your view/Kad/address book and maybe dial
                     self.on_add_address(peer_id, addr).await;
                 }
+                let pie = self.view.peers.get(&peer_id);
+                if let Some(pie) = pie {
+                    if !pie.supports_relay_hop_v2 {
+                        return Ok(());
+                    }
+                    if pie.addresses.is_empty() {
+                        return Ok(());
+                    }
+                    for addr in &pie.addresses {
+                        let relayed_listen = addr
+                            .clone()
+                            .with(Protocol::P2p(peer_id))
+                            .with(Protocol::P2pCircuit);
+                        if let Err(e) = self.swarm.listen_on(relayed_listen.clone()) {
+                            eprintln!(
+                                "Failed to listen on relay {peer_id} @ {relayed_listen}: {:?}",
+                                e
+                            );
+                        } else {
+                            println!(
+                                "🔌 requesting relay reservation via {peer_id} @ {relayed_listen}"
+                            );
+                        }
+                    }
+                }
+            }
+            SwarmEvent::Behaviour(SavedBehaviourEvent::Relay(ReservationReqAccepted {
+                relay_peer_id,
+                renewal,
+                limit,
+            })) => {
+                println!(
+                    "Relay reservation request accepted at: {relay_peer_id}. Renewal: {renewal}. Limit: {limit:?}"
+                );
             }
             _ => {
                 println!("Unhandled event: {:?}", event);
