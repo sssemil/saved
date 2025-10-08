@@ -1,7 +1,6 @@
 mod error;
 mod keygen;
 mod network;
-mod signals;
 mod view;
 
 use crate::error::SavedResult;

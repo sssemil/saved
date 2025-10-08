@@ -2710,6 +2710,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rsa",
  "sha2",
+ "shutdown_signal",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -2782,6 +2783,15 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shutdown_signal"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0800509547842519d726ed1cd4863aef9bd9b852ef8460fb2e345d8ee7154a9e"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "signal-hook-registry"

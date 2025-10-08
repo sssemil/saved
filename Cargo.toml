@@ -17,3 +17,4 @@ rand_core = "0.6.4"
 dashmap = "7.0.0-rc2"
 env_helpers = '0.1.0'
 async-trait = "0.1.89"
+shutdown_signal = "0.1.0"
