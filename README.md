@@ -10,4 +10,5 @@ Issue:
 Issue:
     We need to have two modes for the network, active and passive. Active mode must be used when a node from target
     nodes is not connected to us, in this mode, actively look on the DHT, and reserve relays. Once we are connected to
-    all target nodes, go into passive mode. In passive mode, just maintain a connection to target nodes.
+    all target nodes, go into passive mode. In passive mode, just maintain a connection to target nodes. Always keep 
+    mDNS on, since we could suddenly find ourselves on a LAN with our targets.

@@ -10,6 +10,8 @@ saved_rpc! {
         async fn kad_find_peer(target: PeerId) -> SavedResult<()>;
         async fn kad_bootstrap() -> SavedResult<()>;
         async fn dial(addr: Multiaddr) -> SavedResult<()>;
+        async fn add_target_peer(target: PeerId) -> SavedResult<bool>;
+        async fn remove_target_peer(target: PeerId) -> SavedResult<bool>;
     }
 
     handle = SavedHandle,

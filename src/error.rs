@@ -33,6 +33,8 @@ pub enum SavedError {
     TokioMpscSendNetRpc(#[from] mpsc::error::SendError<network::api::SavedNetworkRpc>),
     #[error("oneshot canceled while awaiting RPC reply for {rpc}")]
     OneshotCanceled { rpc: &'static str },
+    #[error("PeerId Parse Error: {0}")]
+    Libp2pParse(#[from] libp2p::identity::ParseError),
 }
 
 pub type SavedResult<T> = Result<T, SavedError>;

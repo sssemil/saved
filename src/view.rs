@@ -16,7 +16,7 @@ pub struct PeerInfoExt {
     pub connections: HashMap<ConnectionId, Multiaddr>,
     /// How many active connections currently use a given remote addr.
     active_addrs: HashMap<Multiaddr, u32>,
-    protocols: Vec<StreamProtocol>,
+    protocols: HashSet<StreamProtocol>,
     pub supports_relay_hop_v2: bool,
 }
 
@@ -100,11 +100,8 @@ impl NetworkView {
         }
     }
 
-    pub fn add_protocols(&mut self, peer_id: PeerId, mut protocols: Vec<StreamProtocol>) {
-        for p in &mut protocols {
-            println!("\t[{peer_id}] Adding protocol {p:?}");
-        }
-
+    pub fn set_protocols(&mut self, peer_id: PeerId, protocols: Vec<StreamProtocol>) {
+        let protocols: HashSet<StreamProtocol> = HashSet::from_iter(protocols);
         // detect HOP v2 support
         let hop_supported = protocols.iter().any(|p| {
             let s = p.as_ref();
@@ -112,7 +109,18 @@ impl NetworkView {
         });
 
         let p = self.peers.entry(peer_id).or_default();
-        p.protocols.append(&mut protocols);
+
+        // Show new and removed protocols if any
+        let removed_protocols = p.protocols.difference(&protocols);
+        let added_protocols = protocols.difference(&p.protocols);
+        for protocol in removed_protocols {
+            println!("[{peer_id}] PR: -{:?}", protocol);
+        }
+        for protocol in added_protocols {
+            println!("[{peer_id}] PR: +{:?}", protocol);
+        }
+
+        p.protocols = protocols;
         p.supports_relay_hop_v2 = hop_supported;
     }
 }

@@ -1,19 +1,47 @@
 use tokio::signal;
+#[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
 
-pub async fn handle_shutdown_signals() {
-    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to get SIGTERM handler.");
-    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to get SIGINT handler.");
+#[derive(Debug, Clone, Copy)]
+pub enum ShutdownReason {
+    #[cfg(unix)]
+    SigTerm,
+    #[cfg(unix)]
+    SigInt,
+    CtrlC,
+}
 
-    tokio::select! {
-        _ = sigterm.recv() => {
-            println!("Received SIGTERM");
+/// Usage:
+/// ```
+/// let shutdown = shutdown_signal();
+/// tokio::pin!(shutdown);
+///
+/// loop {
+///     select! {
+///         biased;
+///         reason = &mut shutdown =>  {
+///             println!("Received shutdown signal: {:?}", reason);
+///             break;
+///         }
+///     }
+/// }
+/// ```
+pub async fn shutdown_signal() -> ShutdownReason {
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => ShutdownReason::SigTerm,
+            _ = sigint.recv()  => ShutdownReason::SigInt,
+            _ = signal::ctrl_c() => ShutdownReason::CtrlC,
         }
-        _ = sigint.recv() => {
-            println!("Received SIGINT");
-        }
-        _ = signal::ctrl_c() => {
-            println!("Received Ctrl+C");
-        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await.expect("ctrl_c");
+        ShutdownReason::CtrlC
     }
 }

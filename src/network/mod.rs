@@ -5,15 +5,17 @@ mod rpc_macros;
 use crate::error::{SavedError, SavedResult};
 use crate::network::api::{SavedNetworkApi, SavedNetworkRpc};
 use crate::network::handle::SavedHandle;
-use crate::signals::handle_shutdown_signals;
+use crate::signals::shutdown_signal;
 use crate::view::NetworkView;
 use futures::StreamExt;
+use libp2p::core::ConnectedPoint;
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::relay::client::Event::ReservationReqAccepted;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, autonat, dcutr, identify, kad, mdns, ping, relay};
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -22,6 +24,8 @@ use tokio::task::JoinHandle;
 pub struct SavedNetwork {
     swarm: Swarm<SavedBehaviour>,
     view: NetworkView,
+    target_peers: HashSet<PeerId>,
+    active_mode: bool,
     events_tx: broadcast::Sender<SavedNetworkEvent>,
     cmd_rx: mpsc::Receiver<SavedNetworkRpc>,
 }
@@ -134,6 +138,8 @@ impl SavedNetwork {
         let mut net = SavedNetwork {
             swarm,
             view: Default::default(),
+            target_peers: Default::default(),
+            active_mode: true,
             events_tx: events_tx.clone(),
             cmd_rx,
         };
@@ -161,9 +167,16 @@ impl SavedNetwork {
     async fn event_loop(&mut self) {
         println!("Press Ctrl+C to stop.");
 
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+
         loop {
             select! {
                 biased;
+                reason = &mut shutdown =>  {
+                    println!("Received shutdown signal: {:?}", reason);
+                    break;
+                }
                 Some(cmd) = self.cmd_rx.recv() => {
                     if let Err(e) = self.dispatch_rpc(cmd).await {
                         eprintln!("RPC error: {}", e);
@@ -176,9 +189,6 @@ impl SavedNetwork {
                             eprintln!("Error handling swarm event: {}", e);
                         }
                     }
-                }
-                _ = handle_shutdown_signals() => {
-                    println!("Received shutdown signal.");
                 }
             }
         }
@@ -211,6 +221,77 @@ impl SavedNetwork {
         if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
             kad.remove_address(&peer_id, &addr);
         }
+    }
+
+    async fn on_peer_connection_closed(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+    ) -> SavedResult<()> {
+        self.view.remove_connection(&peer_id, connection_id);
+        self.events_tx.send(SavedNetworkEvent::Disconnected {
+            peer_id,
+            connection_id,
+        })?;
+
+        if self.target_peers.contains(&peer_id) {
+            // Check if we still have a valid connection to this peer
+            if !self.view.is_connected(&peer_id) {
+                // No longer connected to this target peer, get active
+                self.set_active_mode(true).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn on_peer_connection_opened(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        endpoint: ConnectedPoint,
+    ) -> SavedResult<()> {
+        self.view.add_connection(peer_id, connection_id, &endpoint);
+        self.events_tx.send(SavedNetworkEvent::Connected {
+            peer_id,
+            connection_id,
+        })?;
+
+        if self.target_peers.contains(&peer_id) {
+            let mut all_connected = true;
+            for t in self.target_peers.iter() {
+                if !self.view.is_connected(t) {
+                    println!("Peer {t} is not connected, entering active mode");
+                    self.set_active_mode(true).await?;
+                    all_connected = false;
+                    break;
+                }
+            }
+            if all_connected {
+                println!("All target peers are connected, leaving active mode");
+                self.set_active_mode(false).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn set_active_mode(&mut self, active_mode: bool) -> SavedResult<()> {
+        println!("Setting active mode to {}", active_mode);
+        self.active_mode = active_mode;
+        // TODO: This disrespects prior settings, I don't care about that for now, but might need to
+        //  fix later
+        if active_mode {
+            self.set_kad_enabled(true, KadMode::Client).await?;
+            self.set_mdns_enabled(true).await?;
+            for t in self.target_peers.clone().into_iter() {
+                self.kad_find_peer(t).await?;
+            }
+        } else {
+            self.set_kad_enabled(false, KadMode::Auto).await?;
+        }
+
+        Ok(())
     }
 
     async fn on_swarm_event(&mut self, event: SwarmEvent<SavedBehaviourEvent>) -> SavedResult<()> {
@@ -270,11 +351,8 @@ impl SavedNetwork {
                     "✅ Connection established with peer: {} via {:?}",
                     peer_id, endpoint
                 );
-                self.view.add_connection(peer_id, connection_id, &endpoint);
-                self.events_tx.send(SavedNetworkEvent::Connected {
-                    peer_id,
-                    connection_id,
-                })?;
+                self.on_peer_connection_opened(peer_id, connection_id, endpoint)
+                    .await?;
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -283,14 +361,11 @@ impl SavedNetwork {
                 ..
             } => {
                 println!("❌ Connection closed with peer: {} - {:?}", peer_id, cause);
-                self.view.remove_connection(&peer_id, connection_id);
-                self.events_tx.send(SavedNetworkEvent::Disconnected {
-                    peer_id,
-                    connection_id,
-                })?;
+                self.on_peer_connection_closed(peer_id, connection_id)
+                    .await?;
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
-                println!("🌐 Peer {peer_id} new external addr: {address}");
+                // println!("🌐 Peer {peer_id} new external addr: {address}");
                 self.on_add_address(peer_id, address.clone()).await;
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -323,7 +398,7 @@ impl SavedNetwork {
                 info,
                 ..
             })) => {
-                self.view.add_protocols(peer_id, info.protocols);
+                self.view.set_protocols(peer_id, info.protocols);
                 for addr in info.listen_addrs {
                     // add to your view/Kad/address book and maybe dial
                     self.on_add_address(peer_id, addr).await;
@@ -448,6 +523,14 @@ impl SavedNetworkApi for SavedNetwork {
         }
         self.swarm.dial(addr)?;
         Ok(())
+    }
+
+    async fn add_target_peer(&mut self, target: PeerId) -> SavedResult<bool> {
+        Ok(self.target_peers.insert(target))
+    }
+
+    async fn remove_target_peer(&mut self, target: PeerId) -> SavedResult<bool> {
+        Ok(self.target_peers.remove(&target))
     }
 }
 
