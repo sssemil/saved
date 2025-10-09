@@ -14,12 +14,13 @@ use libp2p::relay::client::Event::ReservationReqAccepted;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, autonat, dcutr, identify, kad, mdns, ping, relay};
+use shutdown_signal::shutdown_signal;
 use std::collections::HashSet;
 use std::time::Duration;
-use shutdown_signal::shutdown_signal;
-use tokio::select;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
+use tokio::{select, time};
 
 pub struct SavedNetwork {
     swarm: Swarm<SavedBehaviour>,
@@ -170,12 +171,29 @@ impl SavedNetwork {
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
 
+        let mut ticker = time::interval(Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
             select! {
                 biased;
                 reason = &mut shutdown =>  {
                     println!("Received shutdown signal: {:?}", reason);
                     break;
+                }
+                _ = ticker.tick() => {
+                    println!("[heartbeat] is_active={}, peers={}", self.active_mode,
+                        self.view.peers.values().map(|p| p.addresses
+                                    .iter()
+                                    .map(|a|
+                                        (a.address.clone(), a.active_connections.len())
+                                    )
+                                    .filter(|(_, count)| *count > 0)
+                                    .collect::<Vec<_>>())
+                            .map(|x| format!("{:?}", x))
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
                 }
                 Some(cmd) = self.cmd_rx.recv() => {
                     if let Err(e) = self.dispatch_rpc(cmd).await {
@@ -198,22 +216,14 @@ impl SavedNetwork {
         if should_skip_for_dial(&addr) {
             return;
         }
-        self.view.add_address(peer_id, addr.clone());
+        if !self.view.add_address(peer_id, addr.clone()) {
+            return;
+        }
+        println!("New address added to peer {peer_id}: {addr}");
         if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
             kad.add_address(&peer_id, addr.clone());
         }
-
-        if !self.view.is_connected_over(&peer_id, &addr) {
-            // Attempt to dial the discovered peer
-            match self.swarm.dial(addr) {
-                Ok(()) => {
-                    println!("Attempting to connect to discovered peer: {}", peer_id);
-                }
-                Err(e) => {
-                    println!("Failed to dial discovered peer {}: {}", peer_id, e);
-                }
-            }
-        }
+        self.reconcile_peer_connections(peer_id);
     }
 
     async fn on_remove_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
@@ -221,6 +231,7 @@ impl SavedNetwork {
         if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
             kad.remove_address(&peer_id, &addr);
         }
+        self.reconcile_peer_connections(peer_id);
     }
 
     async fn on_peer_connection_closed(
@@ -241,6 +252,8 @@ impl SavedNetwork {
                 self.set_active_mode(true).await?;
             }
         }
+
+        self.reconcile_peer_connections(peer_id);
 
         Ok(())
     }
@@ -273,7 +286,57 @@ impl SavedNetwork {
             }
         }
 
+        self.reconcile_peer_connections(peer_id);
+
         Ok(())
+    }
+
+    /// Ensure we keep at most one connection per peer, on the currently-best address.
+    fn reconcile_peer_connections(&mut self, peer_id: PeerId) {
+        println!("Reconcile peer connections for {peer_id} called...");
+        let Some(info) = self.view.peers.get(&peer_id) else {
+            return;
+        };
+
+        if info.addresses.is_empty() {
+            return;
+        }
+
+        // Best address is always at index 0 thanks to view.resort().
+        let best_addr = info.addresses[0].address.clone();
+        let best_is_up = self.view.is_connected_over(&peer_id, &best_addr);
+
+        if best_is_up {
+            println!(
+                "Peer {peer_id} is already connected with the best connection, killing suboptimal connections..."
+            );
+            let Some(info) = self.view.peers.get(&peer_id) else {
+                return;
+            };
+            // Drop all non-best connections (keep only those on best_addr).
+            let mut to_close: Vec<ConnectionId> = Vec::new();
+            for meta in info.addresses.iter().skip(1) {
+                to_close.extend(meta.active_connections.iter().copied());
+            }
+            for cid in to_close {
+                // Close only the unwanted connections.
+                let _ = self.swarm.close_connection(cid);
+            }
+        } else {
+            println!(
+                "Peer {peer_id} is not connected with the best connection, try dialing the best one..."
+            );
+            // If best isn't up but we have other connections, keep them for continuity
+            // and also try to dial the best to migrate over when ready.
+            // If nothing is connected at all, this will also initiate the first dial.
+            if let Err(e) = self.swarm.dial(best_addr.clone()) {
+                eprintln!("reconcile: dial({best_addr}) failed for {peer_id}: {e}");
+                if let Some(p) = self.view.peers.get_mut(&peer_id) {
+                    p.mark_failure(&best_addr);
+                }
+                self.reconcile_peer_connections(peer_id);
+            }
+        }
     }
 
     async fn set_active_mode(&mut self, active_mode: bool) -> SavedResult<()> {
@@ -308,7 +371,7 @@ impl SavedNetwork {
             SwarmEvent::Behaviour(SavedBehaviourEvent::Ping(ev)) => {
                 // Try to find the connection address from our view
                 if let Some(peer_info) = self.view.peers.get(&ev.peer) {
-                    if let Some(addr) = peer_info.connections.get(&ev.connection) {
+                    if let Some(addr) = peer_info.get_connection_address(&ev.connection) {
                         println!(
                             "🏓 Ping event: peer={} via {} -> {:?}",
                             ev.peer, addr, ev.result
@@ -411,8 +474,12 @@ impl SavedNetwork {
                     if pie.addresses.is_empty() {
                         return Ok(());
                     }
+                    // TODO: Don't just dial and reserve a relay immediately, instead store it, and
+                    //  then when we need it (like if both peers are behind a NAT), use it. We can
+                    //  keep it in our network view.
                     for addr in &pie.addresses {
                         let relayed_listen = addr
+                            .address
                             .clone()
                             .with(Protocol::P2p(peer_id))
                             .with(Protocol::P2pCircuit);

@@ -1,7 +1,9 @@
 use libp2p::core::ConnectedPoint;
+use libp2p::multiaddr::Protocol;
 use libp2p::swarm::ConnectionId;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
 pub struct NetworkView {
@@ -10,29 +12,126 @@ pub struct NetworkView {
 
 #[derive(Debug, Default)]
 pub struct PeerInfoExt {
-    /// Known or advertised addresses for this peer (kept exactly as observed, including /p2p/...).
-    pub addresses: HashSet<Multiaddr>,
-    /// Active connections keyed by ConnectionId -> remote addr (kept exactly as observed).
-    pub connections: HashMap<ConnectionId, Multiaddr>,
-    /// How many active connections currently use a given remote addr.
-    active_addrs: HashMap<Multiaddr, u32>,
+    /// Known or advertised addresses for this peer (kept exactly as observed, including /p2p/...),
+    /// plus per-address connection data and minimal metadata for sorting.
+    /// TODO: Monitor for slowdowns with this approach, too many O(n) shenanigans rn
+    pub addresses: Vec<AddressMetadata>,
     protocols: HashSet<StreamProtocol>,
     pub supports_relay_hop_v2: bool,
 }
 
+trait Ranked {
+    fn rank(&self) -> u8;
+}
+
+/// Transport classes we care about for ranking. (Treat WS/WSS as Other.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Transport {
+    Quic,
+    Tcp,
+    Other,
+}
+
+impl Ranked for Transport {
+    /// Smaller rank = higher preference (for sorting).
+    fn rank(&self) -> u8 {
+        match self {
+            Transport::Quic => 0,
+            Transport::Tcp => 1,
+            Transport::Other => 2,
+        }
+    }
+}
+
+/// Coarse network scope for locality-aware preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetScope {
+    LinkLocal,  // v4 169.254/16, v6 fe80::/10
+    PrivateLan, // v4 RFC1918, v6 ULA fc00::/7
+    Public,
+}
+
+impl Ranked for NetScope {
+    fn rank(&self) -> u8 {
+        match self {
+            NetScope::PrivateLan => 0,
+            NetScope::LinkLocal => 1,
+            NetScope::Public => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddressMetadata {
+    /// The multiaddr as observed (kept exactly, including any /p2p segments).
+    /// TODO: Consider removing the p2p segment
+    /// TODO: See what the case with relays is
+    pub address: Multiaddr,
+    /// All active connections currently using this remote addr.
+    pub active_connections: Vec<ConnectionId>,
+    pub transport: Transport,
+    pub scope: NetScope,
+    pub last_err: Option<Instant>,
+    pub err_count: u32,
+}
+
+impl Default for AddressMetadata {
+    fn default() -> Self {
+        Self {
+            address: Multiaddr::empty(),
+            active_connections: Vec::new(),
+            transport: Transport::Other,
+            scope: NetScope::Public,
+            last_err: None,
+            err_count: 0,
+        }
+    }
+}
+
+impl AddressMetadata {
+    fn is_in_cooldown(&self) -> bool {
+        let now = Instant::now();
+        if let Some(at) = self.last_err {
+            let backoff = Duration::from_secs(1 << self.err_count.min(6)); // 1..64s
+            return now.duration_since(at) >= backoff;
+        }
+        true
+    }
+}
+
 impl NetworkView {
-    pub fn add_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
+    pub fn add_address(&mut self, peer_id: PeerId, addr: Multiaddr) -> bool {
         // Keep the address exactly as reported (including any /p2p segments).
-        self.peers
-            .entry(peer_id)
-            .or_default()
-            .addresses
-            .insert(addr);
+        let info = self.peers.entry(peer_id).or_default();
+
+        // O(n) upsert: if present, do nothing; else push a freshly classified metadata entry.
+        if info.addresses.iter().any(|m| m.address == addr) {
+            // still keep the vector sorted to maintain invariant
+            info.resort();
+            return false;
+        }
+
+        let (scope, transport) = classify_addr(&addr);
+        info.addresses.push(AddressMetadata {
+            address: addr,
+            transport,
+            scope,
+            ..Default::default()
+        });
+
+        // Always keep best-first ordering.
+        info.resort();
+
+        true
     }
 
     pub fn remove_address(&mut self, peer_id: &PeerId, addr: &Multiaddr) {
         if let Some(info) = self.peers.get_mut(peer_id) {
-            info.addresses.remove(addr);
+            if let Some(pos) = info.addresses.iter().position(|m| &m.address == addr) {
+                info.addresses.remove(pos);
+            }
+            // Always keep best-first ordering.
+            info.resort();
             self.prune_empty(peer_id);
         }
     }
@@ -51,25 +150,64 @@ impl NetworkView {
 
         let info = self.peers.entry(peer_id).or_default();
 
-        // If this conn_id already exists, do nothing (or update if the addr changed).
-        if let Some(prev) = info.connections.insert(conn_id, remote.clone()) {
-            // If the address changed (should be rare), fix refcounts.
-            if prev != remote {
-                dec_addr_ref(&mut info.active_addrs, &prev);
-                inc_addr_ref(&mut info.active_addrs, remote);
+        // If this conn_id already exists on a different address, move it.
+        if let Some((idx_old, _)) = info
+            .addresses
+            .iter_mut()
+            .enumerate()
+            .find(|(_, m)| m.active_connections.contains(&conn_id))
+        {
+            if info.addresses[idx_old].address != remote {
+                if let Some(pos) = info.addresses[idx_old]
+                    .active_connections
+                    .iter()
+                    .position(|c| *c == conn_id)
+                {
+                    info.addresses[idx_old].active_connections.swap_remove(pos);
+                }
+            } else {
+                // Already tracked on the same address; success clears backoff and return.
+                let oa = &info.addresses[idx_old].address.clone();
+                info.clear_backoff_on_success(oa);
+                info.resort();
+                return;
             }
-            return;
         }
 
-        // New connectionId -> addr mapping.
-        inc_addr_ref(&mut info.active_addrs, remote);
+        // Ensure we have metadata for the remote address (Observed classification if unseen).
+        if !info.addresses.iter().any(|m| m.address == remote) {
+            let (scope, transport) = classify_addr(&remote);
+            info.addresses.push(AddressMetadata {
+                address: remote.clone(),
+                transport,
+                scope,
+                ..Default::default()
+            });
+        }
+
+        // Append connection id to the matching address' active list and clear backoff on success.
+        if let Some(meta) = info.addresses.iter_mut().find(|m| m.address == remote)
+            && !meta.active_connections.contains(&conn_id)
+        {
+            meta.active_connections.push(conn_id);
+        }
+        info.clear_backoff_on_success(&remote);
+
+        // Always keep best-first ordering.
+        info.resort();
     }
 
     pub fn remove_connection(&mut self, peer_id: &PeerId, conn_id: ConnectionId) {
         if let Some(info) = self.peers.get_mut(peer_id) {
-            if let Some(addr) = info.connections.remove(&conn_id) {
-                dec_addr_ref(&mut info.active_addrs, &addr);
+            // Find and remove this connection ID from whichever address holds it.
+            for meta in &mut info.addresses {
+                if let Some(pos) = meta.active_connections.iter().position(|c| *c == conn_id) {
+                    meta.active_connections.swap_remove(pos);
+                    break;
+                }
             }
+            // Always keep best-first ordering.
+            info.resort();
             self.prune_empty(peer_id);
         }
     }
@@ -77,21 +215,29 @@ impl NetworkView {
     pub fn is_connected_over(&self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
         self.peers
             .get(peer_id)
-            .and_then(|info| info.active_addrs.get(addr))
-            .map(|&n| n > 0)
+            .and_then(|info| {
+                info.addresses
+                    .iter()
+                    .find(|m| &m.address == addr)
+                    .map(|m| !m.active_connections.is_empty())
+            })
             .unwrap_or(false)
     }
 
     pub fn is_connected(&self, peer_id: &PeerId) -> bool {
         self.peers
             .get(peer_id)
-            .map(|p| !p.connections.is_empty())
+            .map(|p| p.addresses.iter().any(|m| !m.active_connections.is_empty()))
             .unwrap_or(false)
     }
 
     fn prune_empty(&mut self, peer_id: &PeerId) {
         let remove = if let Some(info) = self.peers.get(peer_id) {
-            info.connections.is_empty() && info.addresses.is_empty()
+            let no_conns = info
+                .addresses
+                .iter()
+                .all(|m| m.active_connections.is_empty());
+            no_conns && info.addresses.is_empty()
         } else {
             false
         };
@@ -125,17 +271,96 @@ impl NetworkView {
     }
 }
 
-fn inc_addr_ref(map: &mut HashMap<Multiaddr, u32>, addr: Multiaddr) {
-    *map.entry(addr).or_insert(0) += 1;
-}
+impl PeerInfoExt {
+    /// Helper used by callers that need to know which remote address a given connection uses.
+    pub(crate) fn get_connection_address(&self, connection_id: &ConnectionId) -> Option<Multiaddr> {
+        self.addresses
+            .iter()
+            .find(|m| m.active_connections.contains(connection_id))
+            .map(|m| m.address.clone())
+    }
 
-fn dec_addr_ref(map: &mut HashMap<Multiaddr, u32>, addr: &Multiaddr) {
-    if let Some(cnt) = map.get_mut(addr) {
-        *cnt -= 1;
-        if *cnt == 0 {
-            map.remove(addr);
+    /// Mark a failure for an address: bump exponential backoff and send it to the end.
+    ///
+    /// Backoff schedule: 1, 2, 4, 8, 16, 32, 64 seconds (capped), during which the
+    /// address is considered "cooling down" and sorted behind all non-cooldown entries.
+    pub fn mark_failure(&mut self, addr: &Multiaddr) {
+        if let Some(m) = self.addresses.iter_mut().find(|m| &m.address == addr) {
+            m.err_count = m.err_count.saturating_add(1);
+            m.last_err = Some(Instant::now());
+            // After marking failure, immediately push it down by re-sorting.
+            self.resort();
         }
     }
+
+    /// On successful use of an address, clear any backoff state.
+    pub fn clear_backoff_on_success(&mut self, addr: &Multiaddr) {
+        if let Some(m) = self.addresses.iter_mut().find(|m| &m.address == addr) {
+            m.err_count = 0;
+            m.last_err = None;
+        }
+    }
+
+    /// Keep the addresses vector sorted so that index 0 is always the current "best" candidate.
+    ///
+    /// Unless under backoff, the priority is:
+    /// 1) Non-relay over relay
+    /// 2) Address scope (PrivateLan > LinkLocal > Public)
+    /// 3) Transport (QUIC > TCP > Other)
+    /// 4) Resolution (IP over DNS)
+    ///
+    /// If an address is in exponential backoff cooldown (recent error not yet cooled down),
+    /// it is sorted to the **end** regardless of the other criteria.
+    fn resort(&mut self) {
+        self.addresses.sort_by_key(|m| {
+            let in_cooldown = m.is_in_cooldown(); // true -> send to end
+            (
+                in_cooldown,
+                m.scope.rank(),     // smaller rank is better
+                m.transport.rank(), // smaller rank is better
+            )
+        });
+    }
+}
+
+fn classify_addr(addr: &Multiaddr) -> (NetScope, Transport) {
+    let mut scope = NetScope::Public;
+    let mut transport = Transport::Other;
+
+    for p in addr.iter() {
+        match p {
+            Protocol::Ip4(ip) => {
+                scope = match ip.octets() {
+                    // RFC1918
+                    [10, ..] => NetScope::PrivateLan,
+                    [172, b, ..] if (16..=31).contains(&b) => NetScope::PrivateLan,
+                    [192, 168, ..] => NetScope::PrivateLan,
+                    // Link-local v4
+                    [169, 254, ..] => NetScope::LinkLocal,
+                    _ => NetScope::Public,
+                }
+            }
+            Protocol::Ip6(ip) => {
+                let seg0 = u16::from_be_bytes([ip.octets()[0], ip.octets()[1]]);
+                scope = if (seg0 & 0xfe00) == 0xfc00 {
+                    NetScope::PrivateLan // fc00::/7 ULA
+                } else if (seg0 & 0xffc0) == 0xfe80 {
+                    NetScope::LinkLocal // fe80::/10
+                } else {
+                    NetScope::Public
+                };
+            }
+            Protocol::QuicV1 | Protocol::Quic => transport = Transport::Quic,
+            Protocol::Tcp(_) => {
+                if transport.rank() > Transport::Tcp.rank() {
+                    transport = Transport::Tcp
+                }
+            }
+            // Treat WS/WSS as Other (do nothing)
+            _ => {}
+        }
+    }
+    (scope, transport)
 }
 
 #[cfg(test)]
@@ -167,6 +392,10 @@ mod tests {
         a
     }
 
+    fn vec_contains_addr(v: &[AddressMetadata], addr: &Multiaddr) -> bool {
+        v.iter().any(|m| &m.address == addr)
+    }
+
     #[test]
     fn add_address_keeps_p2p_suffix() {
         let mut view = NetworkView::default();
@@ -179,11 +408,11 @@ mod tests {
 
         let info = view.peers.get(&peer).expect("peer present");
         assert!(
-            info.addresses.contains(&with_p2p_suffix),
+            vec_contains_addr(&info.addresses, &with_p2p_suffix),
             "we keep the exact addr with /p2p"
         );
         assert!(
-            !info.addresses.contains(&base),
+            !vec_contains_addr(&info.addresses, &base),
             "we do not auto-normalize to a version without /p2p"
         );
     }
@@ -195,7 +424,10 @@ mod tests {
         let a = ip4_tcp([10, 0, 0, 2], 3333);
 
         view.add_address(peer, a.clone());
-        assert!(view.peers.get(&peer).unwrap().addresses.contains(&a));
+        assert!(vec_contains_addr(
+            &view.peers.get(&peer).unwrap().addresses,
+            &a
+        ));
 
         view.remove_address(&peer, &a);
         assert!(
@@ -230,9 +462,24 @@ mod tests {
         view.add_connection(peer, ConnectionId::new_unchecked(2), &cp2);
         assert!(view.is_connected_over(&peer, &send_back));
 
-        // Sanity: two connections tracked
+        // Sanity: two connections tracked across the two addresses
         let info = view.peers.get(&peer).unwrap();
-        assert_eq!(info.connections.len(), 2);
+        let total_conns: usize = info
+            .addresses
+            .iter()
+            .map(|m| m.active_connections.len())
+            .sum();
+        assert_eq!(total_conns, 2);
+
+        // get_connection_address works
+        let addr1 = info
+            .get_connection_address(&ConnectionId::new_unchecked(1))
+            .unwrap();
+        assert_eq!(addr1, remote1);
+        let addr2 = info
+            .get_connection_address(&ConnectionId::new_unchecked(2))
+            .unwrap();
+        assert_eq!(addr2, send_back);
     }
 
     #[test]
@@ -254,8 +501,8 @@ mod tests {
         view.remove_connection(&peer, ConnectionId::new_unchecked(10));
         assert!(!view.is_connected_over(&peer, &remote));
         assert!(
-            !view.peers.contains_key(&peer),
-            "peer pruned after last connection removed"
+            view.peers.contains_key(&peer),
+            "peer NOT pruned after last connection removed"
         );
     }
 

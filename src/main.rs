@@ -25,7 +25,7 @@ async fn main() -> SavedResult<()> {
 
     let mut network_handle = SavedNetwork::new(keypair).await?;
     network_handle
-        .set_kad_enabled(true, KadMode::Server)
+        .set_kad_enabled(true, KadMode::Client)
         .await?;
     network_handle.set_mdns_enabled(true).await?;
     sleep(Duration::from_secs(2)).await;
