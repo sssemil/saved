@@ -304,10 +304,9 @@ impl PeerInfoExt {
     /// Keep the addresses vector sorted so that index 0 is always the current "best" candidate.
     ///
     /// Unless under backoff, the priority is:
-    /// 1) Non-relay over relay
-    /// 2) Address scope (PrivateLan > LinkLocal > Public)
-    /// 3) Transport (QUIC > TCP > Other)
-    /// 4) Resolution (IP over DNS)
+    /// 1) Address scope (PrivateLan > LinkLocal > Public)
+    /// 2) Transport (QUIC > TCP > Other)
+    /// 3) Resolution (IP over DNS)
     ///
     /// If an address is in exponential backoff cooldown (recent error not yet cooled down),
     /// it is sorted to the **end** regardless of the other criteria.
@@ -318,6 +317,7 @@ impl PeerInfoExt {
                 in_cooldown,
                 m.scope.rank(),     // smaller rank is better
                 m.transport.rank(), // smaller rank is better
+                m.address.clone(),
             )
         });
     }

@@ -7,6 +7,7 @@ use crate::network::api::{SavedNetworkApi, SavedNetworkRpc};
 use crate::network::handle::SavedHandle;
 use crate::view::NetworkView;
 use futures::StreamExt;
+use libp2p::autonat::NatStatus;
 use libp2p::core::ConnectedPoint;
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
@@ -14,6 +15,7 @@ use libp2p::relay::client::Event::ReservationReqAccepted;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, autonat, dcutr, identify, kad, mdns, ping, relay};
+use rand_core::OsRng;
 use shutdown_signal::shutdown_signal;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -25,6 +27,8 @@ use tokio::{select, time};
 pub struct SavedNetwork {
     swarm: Swarm<SavedBehaviour>,
     view: NetworkView,
+    /// AutoNAT
+    nat_status: NatStatus,
     target_peers: HashSet<PeerId>,
     active_mode: bool,
     events_tx: broadcast::Sender<SavedNetworkEvent>,
@@ -38,6 +42,7 @@ struct SavedBehaviour {
     kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
     identify: identify::Behaviour,
     autonat: autonat::Behaviour,
+    autonat_v2: autonat::v2::client::Behaviour,
     dcutr: dcutr::Behaviour,
     relay: relay::client::Behaviour,
 }
@@ -117,9 +122,18 @@ impl SavedNetwork {
                 autonat: autonat::Behaviour::new(
                     peer_id,
                     autonat::Config {
+                        retry_interval: Duration::from_secs(10),
+                        refresh_interval: Duration::from_secs(30),
+                        boot_delay: Duration::from_secs(5),
+                        throttle_server_period: Duration::ZERO,
                         only_global_ips: true,
                         ..Default::default()
                     },
+                ),
+                autonat_v2: autonat::v2::client::Behaviour::new(
+                    OsRng,
+                    autonat::v2::client::Config::default()
+                        .with_probe_interval(Duration::from_secs(5)),
                 ),
                 dcutr: dcutr::Behaviour::new(peer_id),
                 relay: relay_client,
@@ -139,6 +153,7 @@ impl SavedNetwork {
         let mut net = SavedNetwork {
             swarm,
             view: Default::default(),
+            nat_status: NatStatus::Unknown,
             target_peers: Default::default(),
             active_mode: true,
             events_tx: events_tx.clone(),
@@ -291,6 +306,11 @@ impl SavedNetwork {
         Ok(())
     }
 
+    fn is_prune_leader(&self, remote: &PeerId) -> bool {
+        let me = self.swarm.local_peer_id();
+        me.to_bytes() < remote.to_bytes()
+    }
+
     /// Ensure we keep at most one connection per peer, on the currently-best address.
     fn reconcile_peer_connections(&mut self, peer_id: PeerId) {
         println!("Reconcile peer connections for {peer_id} called...");
@@ -307,6 +327,12 @@ impl SavedNetwork {
         let best_is_up = self.view.is_connected_over(&peer_id, &best_addr);
 
         if best_is_up {
+            if !self.is_prune_leader(&peer_id) {
+                println!(
+                    "Not my job to prune; keep status quo to avoid both sides closing at once."
+                );
+                return;
+            }
             println!(
                 "Peer {peer_id} is already connected with the best connection, killing suboptimal connections..."
             );
@@ -354,6 +380,11 @@ impl SavedNetwork {
             self.set_kad_enabled(false, KadMode::Auto).await?;
         }
 
+        Ok(())
+    }
+
+    async fn on_nat_status_change(&mut self, new_status: NatStatus) -> SavedResult<()> {
+        self.nat_status = new_status;
         Ok(())
     }
 
@@ -466,35 +497,6 @@ impl SavedNetwork {
                     // add to your view/Kad/address book and maybe dial
                     self.on_add_address(peer_id, addr).await;
                 }
-                let pie = self.view.peers.get(&peer_id);
-                if let Some(pie) = pie {
-                    if !pie.supports_relay_hop_v2 {
-                        return Ok(());
-                    }
-                    if pie.addresses.is_empty() {
-                        return Ok(());
-                    }
-                    // TODO: Don't just dial and reserve a relay immediately, instead store it, and
-                    //  then when we need it (like if both peers are behind a NAT), use it. We can
-                    //  keep it in our network view.
-                    for addr in &pie.addresses {
-                        let relayed_listen = addr
-                            .address
-                            .clone()
-                            .with(Protocol::P2p(peer_id))
-                            .with(Protocol::P2pCircuit);
-                        if let Err(e) = self.swarm.listen_on(relayed_listen.clone()) {
-                            eprintln!(
-                                "Failed to listen on relay {peer_id} @ {relayed_listen}: {:?}",
-                                e
-                            );
-                        } else {
-                            println!(
-                                "🔌 requesting relay reservation via {peer_id} @ {relayed_listen}"
-                            );
-                        }
-                    }
-                }
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Relay(ReservationReqAccepted {
                 relay_peer_id,
@@ -504,6 +506,35 @@ impl SavedNetwork {
                 println!(
                     "Relay reservation request accepted at: {relay_peer_id}. Renewal: {renewal}. Limit: {limit:?}"
                 );
+            }
+            SwarmEvent::Behaviour(SavedBehaviourEvent::AutonatV2(autonat::v2::client::Event {
+                server,
+                tested_addr,
+                bytes_sent,
+                result,
+            })) => match result {
+                Ok(_) => {
+                    println!(
+                        "[AutoNATv2] Tested {tested_addr} with {server}. Sent {bytes_sent} bytes for verification. Everything Ok and verified."
+                    );
+                    self.on_nat_status_change(NatStatus::Public(tested_addr))
+                        .await?;
+                }
+                Err(e) => {
+                    println!(
+                        "[AutoNATv2] Tested {tested_addr} with {server}. Sent {bytes_sent} bytes for verification. Failed with {e:?}."
+                    );
+                    self.on_nat_status_change(NatStatus::Private).await?;
+                }
+            },
+            SwarmEvent::Behaviour(SavedBehaviourEvent::Autonat(
+                autonat::Event::StatusChanged { old, new },
+            )) => {
+                println!("[AutoNAT] NAT status changed: {old:?}, {new:?}");
+                self.on_nat_status_change(new).await?;
+            }
+            SwarmEvent::ExternalAddrConfirmed { address } => {
+                println!("External address for this node confirmed: {address}");
             }
             _ => {
                 println!("Unhandled event: {:?}", event);
@@ -538,6 +569,7 @@ impl SavedNetworkApi for SavedNetwork {
     }
 
     async fn set_kad_enabled(&mut self, enabled: bool, mode: KadMode) -> SavedResult<()> {
+        println!("KAD enabled={enabled}, mode={mode:?}");
         let local = *self.swarm.local_peer_id();
         let kad_toggle = &mut self.swarm.behaviour_mut().kad;
         if enabled {
@@ -675,18 +707,21 @@ mod tests {
         let mut m = make_net("M").await;
         let mut c = make_net("C").await;
 
+        a.add_target_peer(c.id).await.unwrap();
+        c.add_target_peer(a.id).await.unwrap();
+
         // Disable mDNS for deterministic topology
         a.set_mdns_enabled(false).await.unwrap();
         m.set_mdns_enabled(false).await.unwrap();
         c.set_mdns_enabled(false).await.unwrap();
 
         // Enable Kad (server so they keep tables)
-        a.set_kad_enabled(true, KadMode::Server).await.unwrap();
+        a.set_kad_enabled(true, KadMode::Client).await.unwrap();
         m.set_kad_enabled(true, KadMode::Server).await.unwrap();
-        c.set_kad_enabled(true, KadMode::Server).await.unwrap();
+        c.set_kad_enabled(true, KadMode::Client).await.unwrap();
 
         // Wait for M to announce a p2p listening address
-        let m_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        let m_addr = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 match m.events_rx.recv().await {
                     Ok(SavedNetworkEvent::ListeningOn { addr }) => break addr,
@@ -710,7 +745,7 @@ mod tests {
                 wait_for_connected(&mut m.events_rx, a.id),
             );
         };
-        tokio::time::timeout(Duration::from_secs(5), am)
+        tokio::time::timeout(Duration::from_secs(1), am)
             .await
             .unwrap();
         let cm = async {
@@ -719,7 +754,7 @@ mod tests {
                 wait_for_connected(&mut m.events_rx, c.id),
             );
         };
-        tokio::time::timeout(Duration::from_secs(5), cm)
+        tokio::time::timeout(Duration::from_secs(1), cm)
             .await
             .unwrap();
 
@@ -729,7 +764,7 @@ mod tests {
 
         // Finally, A should connect directly to C
         tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(1),
             wait_for_connected(&mut a.events_rx, c.id),
         )
         .await

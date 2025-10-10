@@ -16,7 +16,7 @@ use tokio::time::sleep;
 async fn main() -> SavedResult<()> {
     // Get seed phrase from environment variable, panic if missing
     let seed_phrase = get_env_default("SEED_PHRASE", "test".to_string());
-    let boostrap = get_env_default("BOOTSTRAP", false);
+    let boostrap = get_env_default("BOOTSTRAP", true);
 
     println!("Using seed phrase: '{}'", seed_phrase);
 
