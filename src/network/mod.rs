@@ -235,13 +235,22 @@ impl SavedNetwork {
         if should_skip_for_dial(&addr) {
             return;
         }
-        if !self.view.add_address(peer_id, addr.clone()) {
+
+        // add_address returns true if this is a new address
+        let is_new = self.view.add_address(peer_id, addr.clone());
+
+        if !is_new {
+            // Address already known, nothing to do
             return;
         }
+
         println!("New address added to peer {peer_id}: {addr}");
         if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
             kad.add_address(&peer_id, addr.clone());
         }
+
+        // Always reconcile when we learn a new address
+        // This allows migration to better addresses when they're discovered
         self.reconcile_peer_connections(peer_id);
     }
 
@@ -355,18 +364,65 @@ impl SavedNetwork {
                 let _ = self.swarm.close_connection(cid);
             }
         } else {
-            println!(
-                "Peer {peer_id} is not connected with the best connection, try dialing the best one..."
-            );
-            // If best isn't up but we have other connections, keep them for continuity
-            // and also try to dial the best to migrate over when ready.
-            // If nothing is connected at all, this will also initiate the first dial.
-            if let Err(e) = self.swarm.dial(best_addr.clone()) {
-                eprintln!("reconcile: dial({best_addr}) failed for {peer_id}: {e}");
-                if let Some(p) = self.view.peers.get_mut(&peer_id) {
-                    p.mark_failure(&best_addr);
+            // Best connection is not up
+            let is_connected = self.view.is_connected(&peer_id);
+
+            if !is_connected {
+                // No connection at all, try to establish one
+                println!("Peer {peer_id} is not connected at all, dialing the best address...");
+                if let Err(e) = self.swarm.dial(best_addr.clone()) {
+                    eprintln!("reconcile: dial({best_addr}) failed for {peer_id}: {e}");
+                    if let Some(p) = self.view.peers.get_mut(&peer_id) {
+                        p.mark_failure(&best_addr);
+                    }
+                    self.reconcile_peer_connections(peer_id);
                 }
-                self.reconcile_peer_connections(peer_id);
+            } else {
+                // We have a connection, but not on the best address
+                // Try to migrate to the better connection
+
+                // Check if best_addr is already being dialed or has a pending connection
+                let Some(info) = self.view.peers.get(&peer_id) else {
+                    return;
+                };
+
+                // Check if we're already connected or connecting to best_addr
+                let best_addr_status = info
+                    .addresses
+                    .iter()
+                    .find(|m| m.address == best_addr)
+                    .map(|m| !m.active_connections.is_empty())
+                    .unwrap_or(false);
+
+                if best_addr_status {
+                    // Already connected on best, this shouldn't happen but handle it
+                    println!("Peer {peer_id} already has connection on best address");
+                } else {
+                    // Try to dial the better address while keeping the existing connection
+                    // Once the new connection is established, reconcile will be called again
+                    // and will close the old connections (handled by the prune leader)
+                    println!(
+                        "Peer {peer_id} is connected but not on best address. Attempting to migrate to better connection at {best_addr}..."
+                    );
+
+                    // Only dial if we're the dial initiator (to avoid both sides dialing simultaneously)
+                    if self.is_prune_leader(&peer_id) {
+                        if let Err(e) = self.swarm.dial(best_addr.clone()) {
+                            eprintln!(
+                                "reconcile: dial({best_addr}) for migration failed for {peer_id}: {e}"
+                            );
+                            if let Some(p) = self.view.peers.get_mut(&peer_id) {
+                                p.mark_failure(&best_addr);
+                            }
+                        } else {
+                            println!("Successfully initiated dial to better address for {peer_id}");
+                        }
+                    } else {
+                        println!(
+                            "Not dial leader for {peer_id}, waiting for remote to initiate migration"
+                        );
+                    }
+                }
             }
         }
     }
