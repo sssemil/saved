@@ -1,10 +1,12 @@
 pub(crate) mod api;
 pub(crate) mod handle;
+mod relay_manager;
 mod rpc_macros;
 
 use crate::error::{SavedError, SavedResult};
 use crate::network::api::{SavedNetworkApi, SavedNetworkRpc};
 use crate::network::handle::SavedHandle;
+use crate::network::relay_manager::RelayManager;
 use crate::view::NetworkView;
 use futures::StreamExt;
 use libp2p::autonat::NatStatus;
@@ -29,6 +31,7 @@ pub struct SavedNetwork {
     view: NetworkView,
     /// AutoNAT
     nat_status: NatStatus,
+    relay_manager: RelayManager,
     target_peers: HashSet<PeerId>,
     active_mode: bool,
     events_tx: broadcast::Sender<SavedNetworkEvent>,
@@ -154,6 +157,7 @@ impl SavedNetwork {
             swarm,
             view: Default::default(),
             nat_status: NatStatus::Unknown,
+            relay_manager: RelayManager::new(4),
             target_peers: Default::default(),
             active_mode: true,
             events_tx: events_tx.clone(),
@@ -269,6 +273,7 @@ impl SavedNetwork {
         }
 
         self.reconcile_peer_connections(peer_id);
+        self.update_relay_state();
 
         Ok(())
     }
@@ -302,6 +307,7 @@ impl SavedNetwork {
         }
 
         self.reconcile_peer_connections(peer_id);
+        self.update_relay_state();
 
         Ok(())
     }
@@ -388,6 +394,29 @@ impl SavedNetwork {
         Ok(())
     }
 
+    /// Update relay usage state and prune if needed.
+    /// Call this after connection state changes.
+    fn update_relay_state(&mut self) {
+        self.relay_manager.recompute_in_use(&self.view);
+        self.prune_relays();
+    }
+
+    /// Prune excess relay reservations, preferring to keep low-latency relays.
+    fn prune_relays(&mut self) {
+        while self.relay_manager.should_prune() {
+            if let Some(to_prune) = self.relay_manager.get_worst_unused(&self.view) {
+                let rtt = self.relay_manager.get_relay_rtt(&self.view, &to_prune);
+                self.relay_manager.remove(&to_prune);
+                // Best-effort disconnect; reservation will lapse server-side
+                let _ = self.swarm.disconnect_peer_id(to_prune);
+                println!("🔌 Pruned relay reservation: {to_prune} (RTT: {rtt:?})");
+            } else {
+                // All reserved relays are carrying live traffic → stop pruning
+                break;
+            }
+        }
+    }
+
     async fn on_swarm_event(&mut self, event: SwarmEvent<SavedBehaviourEvent>) -> SavedResult<()> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
@@ -401,12 +430,15 @@ impl SavedNetwork {
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Ping(ev)) => {
                 // Try to find the connection address from our view
-                if let Some(peer_info) = self.view.peers.get(&ev.peer) {
+                if let Some(peer_info) = self.view.peers.get_mut(&ev.peer) {
                     if let Some(addr) = peer_info.get_connection_address(&ev.connection) {
                         println!(
                             "🏓 Ping event: peer={} via {} -> {:?}",
                             ev.peer, addr, ev.result
                         );
+                        if let Ok(rtt) = ev.result {
+                            peer_info.rtt = rtt;
+                        }
                     } else {
                         eprintln!(
                             "🏓 [!] Ping event: peer={} (connection {:?}, addr unknown) -> {:?}",
@@ -445,8 +477,26 @@ impl SavedNetwork {
                     "✅ Connection established with peer: {} via {:?}",
                     peer_id, endpoint
                 );
+
+                // Check if this connection uses a relay
+                let relay_used = match &endpoint {
+                    ConnectedPoint::Dialer { address, .. } => {
+                        RelayManager::extract_relay_peer(address)
+                    }
+                    ConnectedPoint::Listener { send_back_addr, .. } => {
+                        RelayManager::extract_relay_peer(send_back_addr)
+                    }
+                };
+
                 self.on_peer_connection_opened(peer_id, connection_id, endpoint)
                     .await?;
+
+                // If this connection uses a relay, track it
+                if let Some(relay_id) = relay_used {
+                    println!("🔌 Connection via relay {relay_id}");
+                    self.relay_manager.register(relay_id);
+                    self.update_relay_state();
+                }
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -497,6 +547,51 @@ impl SavedNetwork {
                     // add to your view/Kad/address book and maybe dial
                     self.on_add_address(peer_id, addr).await;
                 }
+
+                // If peer supports relay HOP v2, check capacity before requesting reservation
+                if self
+                    .view
+                    .peers
+                    .get(&peer_id)
+                    .map(|p| p.supports_relay_hop_v2)
+                    .unwrap_or(false)
+                {
+                    // Check if we have capacity for this relay
+                    if !self.relay_manager.can_reserve(&peer_id) {
+                        println!(
+                            "🔌 Skipping relay reservation for {peer_id}: at capacity ({} reserved, {} in use, max {})",
+                            self.relay_manager.stats().reserved_count,
+                            self.relay_manager.stats().in_use_count,
+                            self.relay_manager.stats().max_relays
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(first_addr) = self
+                        .view
+                        .peers
+                        .get(&peer_id)
+                        .and_then(|p| p.addresses.first())
+                    {
+                        let relayed_listen = first_addr
+                            .address
+                            .clone()
+                            .with(Protocol::P2p(peer_id))
+                            .with(Protocol::P2pCircuit);
+
+                        if let Err(e) = self.swarm.listen_on(relayed_listen.clone()) {
+                            eprintln!(
+                                "Failed to listen on relay {peer_id} @ {relayed_listen}: {:?}",
+                                e
+                            );
+                        } else {
+                            println!(
+                                "🔌 Requesting relay reservation via {peer_id} @ {relayed_listen} ({:?})",
+                                self.view.peers.get(&peer_id).map(|p| p.rtt)
+                            );
+                        }
+                    }
+                }
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::Relay(ReservationReqAccepted {
                 relay_peer_id,
@@ -504,8 +599,10 @@ impl SavedNetwork {
                 limit,
             })) => {
                 println!(
-                    "Relay reservation request accepted at: {relay_peer_id}. Renewal: {renewal}. Limit: {limit:?}"
+                    "🔌 Relay reservation accepted at {relay_peer_id}. Renewal: {renewal}. Limit: {limit:?}"
                 );
+                self.relay_manager.register(relay_peer_id);
+                self.update_relay_state();
             }
             SwarmEvent::Behaviour(SavedBehaviourEvent::AutonatV2(autonat::v2::client::Event {
                 server,

@@ -18,6 +18,7 @@ pub struct PeerInfoExt {
     pub addresses: Vec<AddressMetadata>,
     protocols: HashSet<StreamProtocol>,
     pub supports_relay_hop_v2: bool,
+    pub rtt: Duration,
 }
 
 trait Ranked {
@@ -30,6 +31,7 @@ pub enum Transport {
     Quic,
     Tcp,
     Other,
+    Relay,
 }
 
 impl Ranked for Transport {
@@ -39,6 +41,7 @@ impl Ranked for Transport {
             Transport::Quic => 0,
             Transport::Tcp => 1,
             Transport::Other => 2,
+            Transport::Relay => 3,
         }
     }
 }
@@ -93,9 +96,9 @@ impl AddressMetadata {
         let now = Instant::now();
         if let Some(at) = self.last_err {
             let backoff = Duration::from_secs(1 << self.err_count.min(6)); // 1..64s
-            return now.duration_since(at) >= backoff;
+            return now.duration_since(at) < backoff;
         }
-        true
+        false
     }
 }
 
@@ -356,7 +359,9 @@ fn classify_addr(addr: &Multiaddr) -> (NetScope, Transport) {
                     transport = Transport::Tcp
                 }
             }
-            // Treat WS/WSS as Other (do nothing)
+            Protocol::P2pCircuit => {
+                transport = Transport::Relay;
+            }
             _ => {}
         }
     }
